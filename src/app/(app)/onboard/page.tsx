@@ -44,7 +44,7 @@ export default function OnboardPage() {
   const [qualifyingEnd, setQualifyingEnd] = useState("");
   const [saving, setSaving] = useState(false);
   const [scanning, setScanning] = useState(false);
-  const [scanResult, setScanResult] = useState<{ total_found: number; successfully_parsed: number } | null>(null);
+  const [scanResult, setScanResult] = useState<{ total_found: number; successfully_parsed: number; trips_created: number } | null>(null);
   const [scanError, setScanError] = useState<string | null>(null);
 
   // Update qualifying period defaults when tax year changes
@@ -84,6 +84,7 @@ export default function OnboardPage() {
         setScanResult({
           total_found: data.total_found || 0,
           successfully_parsed: data.successfully_parsed || 0,
+          trips_created: data.trips_created || 0,
         });
       }
     } catch (err) {
@@ -293,8 +294,12 @@ export default function OnboardPage() {
                     <span className="font-medium">{scanResult.total_found}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-muted-foreground">Trips parsed</span>
+                    <span className="text-muted-foreground">Emails parsed</span>
                     <span className="font-medium">{scanResult.successfully_parsed}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Trips created</span>
+                    <span className="font-medium">{scanResult.trips_created}</span>
                   </div>
                 </div>
               )}
