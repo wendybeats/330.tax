@@ -7,9 +7,25 @@ export async function GET(request: Request) {
 
   if (code) {
     const supabase = await createClient()
-    const { error } = await supabase.auth.exchangeCodeForSession(code)
+    const { data, error } = await supabase.auth.exchangeCodeForSession(code)
 
-    if (!error) {
+    if (!error && data.session) {
+      // Store the Google provider token so we can use it for Gmail API later
+      const providerToken = data.session.provider_token
+      const providerRefreshToken = data.session.provider_refresh_token
+
+      if (providerToken) {
+        // Upsert user record with Google tokens
+        await supabase.from("users").upsert(
+          {
+            id: data.session.user.id,
+            email: data.session.user.email || "",
+            google_refresh_token: providerRefreshToken || null,
+          },
+          { onConflict: "id" }
+        )
+      }
+
       return NextResponse.redirect(`${origin}/onboard`)
     }
   }

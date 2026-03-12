@@ -47,19 +47,47 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Get the user's Google access token from Supabase auth session
+  // Try to get the Google access token from the current session first
   const {
     data: { session },
   } = await supabase.auth.getSession();
 
-  if (!session?.provider_token) {
+  let accessToken = session?.provider_token;
+
+  // If no provider_token in session, try refreshing via Google refresh token
+  if (!accessToken) {
+    const { data: userData } = await supabase
+      .from("users")
+      .select("google_refresh_token")
+      .eq("id", user.id)
+      .single();
+
+    if (userData?.google_refresh_token) {
+      // Exchange refresh token for a new access token
+      const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          client_id: process.env.GOOGLE_CLIENT_ID!,
+          client_secret: process.env.GOOGLE_CLIENT_SECRET!,
+          refresh_token: userData.google_refresh_token,
+          grant_type: "refresh_token",
+        }),
+      });
+
+      if (tokenResponse.ok) {
+        const tokenData = await tokenResponse.json();
+        accessToken = tokenData.access_token;
+      }
+    }
+  }
+
+  if (!accessToken) {
     return NextResponse.json(
-      { error: "Google access token not available. Please re-authenticate." },
+      { error: "Google access token not available. Please log out and sign in again to reconnect Gmail." },
       { status: 401 }
     );
   }
-
-  const accessToken = session.provider_token;
 
   try {
     // Search Gmail for travel-related emails within the tax year
@@ -74,9 +102,15 @@ export async function POST(request: NextRequest) {
     });
 
     if (!searchResponse.ok) {
-      const error = await searchResponse.text();
+      const errorText = await searchResponse.text();
+      let errorMessage = "Gmail API error";
+      if (searchResponse.status === 403) {
+        errorMessage = "Gmail access denied. Make sure you granted Gmail read access when signing in.";
+      } else if (searchResponse.status === 401) {
+        errorMessage = "Gmail token expired. Please log out and sign in again.";
+      }
       return NextResponse.json(
-        { error: "Gmail API error", details: error },
+        { error: errorMessage, details: errorText },
         { status: searchResponse.status }
       );
     }
