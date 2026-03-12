@@ -217,8 +217,9 @@ export async function POST(request: NextRequest) {
       sources: results,
     });
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
     return NextResponse.json(
-      { error: "Failed to process Gmail messages" },
+      { error: `Failed to process Gmail messages: ${message}` },
       { status: 500 }
     );
   }

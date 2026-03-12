@@ -77,8 +77,8 @@ export default function OnboardPage() {
       });
 
       if (!res.ok) {
-        const data = await res.json();
-        setScanError(data.error || "Failed to scan emails");
+        const data = await res.json().catch(() => ({}));
+        setScanError(data.error || data.details || `Scan failed (${res.status})`);
       } else {
         const data = await res.json();
         setScanResult({
@@ -86,8 +86,8 @@ export default function OnboardPage() {
           successfully_parsed: data.successfully_parsed || 0,
         });
       }
-    } catch {
-      setScanError("Failed to connect to Gmail. Please try again.");
+    } catch (err) {
+      setScanError(`Connection error: ${err instanceof Error ? err.message : "Unknown error"}`);
     } finally {
       setScanning(false);
     }
