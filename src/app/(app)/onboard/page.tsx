@@ -43,7 +43,9 @@ export default function OnboardPage() {
   const [qualifyingStart, setQualifyingStart] = useState("");
   const [qualifyingEnd, setQualifyingEnd] = useState("");
   const [saving, setSaving] = useState(false);
-  const [wantsGmailScan, setWantsGmailScan] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const [scanResult, setScanResult] = useState<{ total_found: number; successfully_parsed: number } | null>(null);
+  const [scanError, setScanError] = useState<string | null>(null);
 
   // Update qualifying period defaults when tax year changes
   function handleYearChange(year: number) {
@@ -62,7 +64,36 @@ export default function OnboardPage() {
     if (!qualifyingEnd) setQualifyingEnd(`${taxYear}-12-31`);
   }
 
-  async function handleComplete(scanGmail: boolean) {
+  async function handleScanGmail() {
+    setScanning(true);
+    setScanError(null);
+    setScanResult(null);
+
+    try {
+      const res = await fetch("/api/ingest/gmail", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tax_year: taxYear }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        setScanError(data.error || "Failed to scan emails");
+      } else {
+        const data = await res.json();
+        setScanResult({
+          total_found: data.total_found || 0,
+          successfully_parsed: data.successfully_parsed || 0,
+        });
+      }
+    } catch {
+      setScanError("Failed to connect to Gmail. Please try again.");
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  async function handleComplete() {
     setSaving(true);
 
     const supabase = createClient();
@@ -85,17 +116,6 @@ export default function OnboardPage() {
       );
     }
 
-    if (scanGmail) {
-      try {
-        await fetch("/api/ingest/gmail", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ tax_year: taxYear }),
-        });
-      } catch {
-        // Continue to dashboard even if scan fails
-      }
-    }
     router.push("/dashboard");
   }
 
@@ -240,40 +260,81 @@ export default function OnboardPage() {
                 <Mail className="size-6 text-primary" />
               </div>
               <CardTitle className="text-2xl">
-                Ready to scan your emails?
+                {scanning ? "Scanning your emails..." : scanResult ? "Scan complete!" : "Ready to scan your emails?"}
               </CardTitle>
               <CardDescription>
-                We&apos;ll search your Gmail for flight confirmations, hotel
-                bookings, and other travel receipts to automatically build your
-                travel timeline.
+                {scanning
+                  ? "Searching Gmail for flight confirmations, hotel bookings, and travel receipts. This may take a minute."
+                  : scanResult
+                    ? `Found ${scanResult.total_found} travel emails and parsed ${scanResult.successfully_parsed} trips.`
+                    : "We\u2019ll search your Gmail for flight confirmations, hotel bookings, and other travel receipts to automatically build your travel timeline."}
               </CardDescription>
             </CardHeader>
             <CardContent className="flex flex-col items-center gap-4">
-              <Button
-                size="lg"
-                className="w-full max-w-xs"
-                onClick={() => {
-                  setWantsGmailScan(true);
-                  setStep(5);
-                }}
-              >
-                <Mail className="size-4" />
-                Scan My Gmail
-              </Button>
-              <Button
-                variant="ghost"
-                className="w-full max-w-xs"
-                onClick={() => {
-                  setWantsGmailScan(false);
-                  setStep(5);
-                }}
-              >
-                <SkipForward className="size-4" />
-                Skip for Now
-              </Button>
-              <p className="text-center text-xs text-muted-foreground">
-                Read-only access. We never send, modify, or delete your emails.
-              </p>
+              {scanning && (
+                <div className="flex flex-col items-center gap-3 py-4">
+                  <Loader2 className="size-8 animate-spin text-primary" />
+                  <p className="text-sm text-muted-foreground">
+                    Reading your inbox...
+                  </p>
+                </div>
+              )}
+
+              {scanError && (
+                <div className="w-full max-w-xs rounded-lg border border-destructive/50 bg-destructive/10 p-3 text-center text-sm text-destructive">
+                  {scanError}
+                </div>
+              )}
+
+              {scanResult && (
+                <div className="w-full max-w-xs space-y-2 rounded-lg border border-border p-4 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Emails found</span>
+                    <span className="font-medium">{scanResult.total_found}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Trips parsed</span>
+                    <span className="font-medium">{scanResult.successfully_parsed}</span>
+                  </div>
+                </div>
+              )}
+
+              {!scanning && !scanResult && (
+                <Button
+                  size="lg"
+                  className="w-full max-w-xs"
+                  onClick={handleScanGmail}
+                >
+                  <Mail className="size-4" />
+                  Scan My Gmail
+                </Button>
+              )}
+
+              {!scanning && (
+                <Button
+                  variant="ghost"
+                  className="w-full max-w-xs"
+                  onClick={() => setStep(5)}
+                >
+                  {scanResult ? (
+                    <>
+                      <ChevronRight className="size-4" />
+                      Continue
+                    </>
+                  ) : (
+                    <>
+                      <SkipForward className="size-4" />
+                      Skip for Now
+                    </>
+                  )}
+                </Button>
+              )}
+
+              {!scanning && !scanResult && (
+                <p className="text-center text-xs text-muted-foreground">
+                  Read-only access. We never send, modify, or delete your emails.
+                </p>
+              )}
             </CardContent>
           </>
         )}
@@ -315,7 +376,7 @@ export default function OnboardPage() {
               <Button
                 size="lg"
                 className="w-full max-w-xs"
-                onClick={() => handleComplete(wantsGmailScan)}
+                onClick={() => handleComplete()}
                 disabled={saving}
               >
                 {saving ? (
