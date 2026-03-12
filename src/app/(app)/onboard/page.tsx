@@ -43,6 +43,7 @@ export default function OnboardPage() {
   const [qualifyingStart, setQualifyingStart] = useState("");
   const [qualifyingEnd, setQualifyingEnd] = useState("");
   const [saving, setSaving] = useState(false);
+  const [wantsGmailScan, setWantsGmailScan] = useState(false);
 
   // Update qualifying period defaults when tax year changes
   function handleYearChange(year: number) {
@@ -85,12 +86,17 @@ export default function OnboardPage() {
     }
 
     if (scanGmail) {
-      // Trigger Gmail scan, then redirect
-      // For now, just redirect - the scan API will be called from dashboard
-      router.push("/dashboard");
-    } else {
-      router.push("/dashboard");
+      try {
+        await fetch("/api/ingest/gmail", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tax_year: taxYear }),
+        });
+      } catch {
+        // Continue to dashboard even if scan fails
+      }
     }
+    router.push("/dashboard");
   }
 
   function handleNext() {
@@ -247,6 +253,7 @@ export default function OnboardPage() {
                 size="lg"
                 className="w-full max-w-xs"
                 onClick={() => {
+                  setWantsGmailScan(true);
                   setStep(5);
                 }}
               >
@@ -257,6 +264,7 @@ export default function OnboardPage() {
                 variant="ghost"
                 className="w-full max-w-xs"
                 onClick={() => {
+                  setWantsGmailScan(false);
                   setStep(5);
                 }}
               >
@@ -307,7 +315,7 @@ export default function OnboardPage() {
               <Button
                 size="lg"
                 className="w-full max-w-xs"
-                onClick={() => handleComplete(false)}
+                onClick={() => handleComplete(wantsGmailScan)}
                 disabled={saving}
               >
                 {saving ? (
