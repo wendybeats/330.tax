@@ -2,8 +2,8 @@ import { redirect } from "next/navigation"
 import Link from "next/link"
 import { createClient } from "@/lib/supabase/server"
 import { Button } from "@/components/ui/button"
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Separator } from "@/components/ui/separator"
+import { UserMenu } from "@/components/layout/user-menu"
 import { LayoutDashboard, Map, Download, Settings } from "lucide-react"
 
 const navItems = [
@@ -66,15 +66,7 @@ export default async function AppLayout({
           </div>
 
           {/* User section */}
-          <div className="flex items-center gap-3">
-            <span className="hidden text-sm text-muted-foreground lg:inline">
-              {email}
-            </span>
-            <Avatar size="sm">
-              {avatarUrl && <AvatarImage src={avatarUrl} alt={email} />}
-              <AvatarFallback>{initials}</AvatarFallback>
-            </Avatar>
-          </div>
+          <UserMenu email={email} avatarUrl={avatarUrl} initials={initials} />
         </div>
 
         {/* Mobile nav */}
