@@ -24,11 +24,6 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Progress,
-  ProgressLabel,
-  ProgressValue,
-} from "@/components/ui/progress";
 
 function isUSCountry(country: string): boolean {
   const upper = country.toUpperCase();
@@ -53,29 +48,25 @@ function getConfidenceVariant(
   }
 }
 
-function getFEIEStatus(daysAbroad: number): {
-  label: string;
-  description: string;
-  variant: "default" | "secondary" | "destructive";
-} {
+function getFEIEStatus(daysAbroad: number) {
   if (daysAbroad >= 330) {
     return {
       label: "Qualifies",
       description: "You meet the 330-day threshold",
-      variant: "default",
+      variant: "default" as const,
     };
   }
   if (daysAbroad >= 280) {
     return {
       label: "Needs Review",
       description: `${330 - daysAbroad} more days needed`,
-      variant: "secondary",
+      variant: "secondary" as const,
     };
   }
   return {
     label: "Not Yet",
     description: `${330 - daysAbroad} more days needed`,
-    variant: "destructive",
+    variant: "destructive" as const,
   };
 }
 
@@ -83,6 +74,15 @@ function getProgressColor(daysAbroad: number): string {
   if (daysAbroad >= 330) return "bg-emerald-500";
   if (daysAbroad >= 280) return "bg-amber-500";
   return "bg-red-500";
+}
+
+function formatDate(dateStr: string | null | undefined, fallback = "—") {
+  if (!dateStr) return fallback;
+  try {
+    return format(new Date(dateStr), "MMM d, yyyy");
+  } catch {
+    return fallback;
+  }
 }
 
 export default async function DashboardPage() {
@@ -96,14 +96,14 @@ export default async function DashboardPage() {
     redirect("/login");
   }
 
-  // Fetch tax profile for the current/active tax year
+  // Fetch tax profile — use maybeSingle to avoid throwing on 0 rows
   const { data: taxProfile } = await supabase
     .from("tax_profiles")
     .select("*")
     .eq("user_id", user.id)
     .order("tax_year", { ascending: false })
     .limit(1)
-    .single<TaxProfile>();
+    .maybeSingle<TaxProfile>();
 
   // If no tax profile exists, prompt onboarding
   if (!taxProfile) {
@@ -111,9 +111,7 @@ export default async function DashboardPage() {
       <div className="flex min-h-[80vh] items-center justify-center px-4">
         <Card className="w-full max-w-lg text-center">
           <CardHeader>
-            <CardTitle className="text-2xl">
-              Welcome to 330.tax
-            </CardTitle>
+            <CardTitle className="text-2xl">Welcome to 330.tax</CardTitle>
             <CardDescription className="text-base">
               Let&apos;s set up your tax profile so we can start tracking your
               physical presence for the Foreign Earned Income Exclusion.
@@ -136,17 +134,13 @@ export default async function DashboardPage() {
     .from("trips")
     .select("*")
     .eq("user_id", user.id)
+    .eq("tax_year", taxProfile.tax_year)
     .order("date_arrived", { ascending: false });
 
-  const allTrips: Trip[] = (trips as Trip[]) ?? [];
-  const taxYearTrips = allTrips.filter(
-    (t) => t.tax_year === taxProfile.tax_year
-  );
+  const taxYearTrips: Trip[] = (trips as Trip[]) ?? [];
 
   // Calculate summary stats
-  const distinctCountries = new Set(
-    taxYearTrips.map((t) => t.country)
-  );
+  const distinctCountries = new Set(taxYearTrips.map((t) => t.country));
   const totalCountries = distinctCountries.size;
 
   const totalDaysAbroad = taxYearTrips
@@ -169,14 +163,12 @@ export default async function DashboardPage() {
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
         <p className="mt-1 text-muted-foreground">
-          Tax Year {taxProfile.tax_year} &middot; Physical Presence Test
-          Tracker
+          Tax Year {taxProfile.tax_year} &middot; Physical Presence Test Tracker
         </p>
       </div>
 
       {/* Summary Cards */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {/* Total Countries */}
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
@@ -194,7 +186,6 @@ export default async function DashboardPage() {
           </CardContent>
         </Card>
 
-        {/* Days Abroad */}
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
@@ -212,7 +203,6 @@ export default async function DashboardPage() {
           </CardContent>
         </Card>
 
-        {/* US Days */}
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
@@ -230,7 +220,6 @@ export default async function DashboardPage() {
           </CardContent>
         </Card>
 
-        {/* FEIE Status */}
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
@@ -261,12 +250,12 @@ export default async function DashboardPage() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
-          <Progress value={progressPercent} max={100}>
-            <ProgressLabel>Days Abroad</ProgressLabel>
-            <ProgressValue>
-              {() => `${totalDaysAbroad} / 330 days`}
-            </ProgressValue>
-          </Progress>
+          <div className="flex items-center justify-between text-sm">
+            <span className="font-medium">Days Abroad</span>
+            <span className="tabular-nums text-muted-foreground">
+              {totalDaysAbroad} / 330 days
+            </span>
+          </div>
           <div
             className="h-3 w-full overflow-hidden rounded-full bg-muted"
             role="progressbar"
@@ -323,15 +312,18 @@ export default async function DashboardPage() {
                       className="flex items-center justify-between rounded-lg border p-3 transition-colors hover:bg-muted/50"
                     >
                       <div className="flex items-center gap-3">
-                        <span className="text-2xl" role="img" aria-label={trip.country}>
+                        <span
+                          className="text-2xl"
+                          role="img"
+                          aria-label={trip.country}
+                        >
                           {getCountryFlag(trip.country)}
                         </span>
                         <div>
                           <p className="font-medium">{trip.country}</p>
                           <p className="text-xs text-muted-foreground">
-                            {format(new Date(trip.date_arrived), "MMM d")}
-                            {" - "}
-                            {format(new Date(trip.date_departed), "MMM d, yyyy")}
+                            {formatDate(trip.date_arrived, "")}&nbsp;–&nbsp;
+                            {formatDate(trip.date_departed, "")}
                           </p>
                         </div>
                       </div>
@@ -342,7 +334,9 @@ export default async function DashboardPage() {
                             {trip.full_days_present === 1 ? "day" : "days"}
                           </p>
                         </div>
-                        <Badge variant={getConfidenceVariant(trip.confidence)}>
+                        <Badge
+                          variant={getConfidenceVariant(trip.confidence)}
+                        >
                           {trip.confidence}
                         </Badge>
                       </div>
@@ -354,27 +348,39 @@ export default async function DashboardPage() {
           </Card>
         </div>
 
-        {/* Quick Actions */}
-        <div>
+        {/* Quick Actions + Qualifying Period */}
+        <div className="space-y-4">
           <Card>
             <CardHeader>
               <CardTitle>Quick Actions</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              <Link href="/trips/new" className="block">
-                <Button variant="outline" size="lg" className="w-full justify-start gap-2">
+              <Link href="/timeline" className="block">
+                <Button
+                  variant="outline"
+                  size="lg"
+                  className="w-full justify-start gap-2"
+                >
                   <Plus className="size-4" />
                   Add Trip
                 </Button>
               </Link>
-              <Link href="/scan" className="block">
-                <Button variant="outline" size="lg" className="w-full justify-start gap-2">
+              <Link href="/timeline" className="block">
+                <Button
+                  variant="outline"
+                  size="lg"
+                  className="w-full justify-start gap-2"
+                >
                   <Mail className="size-4" />
                   Scan Emails
                 </Button>
               </Link>
               <Link href="/export" className="block">
-                <Button variant="outline" size="lg" className="w-full justify-start gap-2">
+                <Button
+                  variant="outline"
+                  size="lg"
+                  className="w-full justify-start gap-2"
+                >
                   <Download className="size-4" />
                   Export Data
                 </Button>
@@ -382,8 +388,7 @@ export default async function DashboardPage() {
             </CardContent>
           </Card>
 
-          {/* Qualifying Period Info */}
-          <Card className="mt-4">
+          <Card>
             <CardHeader>
               <CardTitle className="text-sm">Qualifying Period</CardTitle>
             </CardHeader>
@@ -391,25 +396,19 @@ export default async function DashboardPage() {
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Start</span>
                 <span className="font-medium">
-                  {format(
-                    new Date(taxProfile.qualifying_period_start),
-                    "MMM d, yyyy"
-                  )}
+                  {formatDate(taxProfile.qualifying_period_start)}
                 </span>
               </div>
               <div className="flex justify-between">
                 <span className="text-muted-foreground">End</span>
                 <span className="font-medium">
-                  {format(
-                    new Date(taxProfile.qualifying_period_end),
-                    "MMM d, yyyy"
-                  )}
+                  {formatDate(taxProfile.qualifying_period_end)}
                 </span>
               </div>
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Filing Status</span>
                 <span className="font-medium capitalize">
-                  {taxProfile.filing_status.replace("_", " ")}
+                  {(taxProfile.filing_status || "single").replace("_", " ")}
                 </span>
               </div>
             </CardContent>
