@@ -18,6 +18,14 @@ const GMAIL_SEARCH_QUERY = [
   '"bus ticket"',
   '"boarding pass"',
   '"check-in confirmation"',
+  '"ticket confirmation"',
+  '"travel document"',
+  '"your flight"',
+  '"your booking"',
+  '"confirmation code"',
+  '"booking reference"',
+  '"PNR"',
+  '"record locator"',
 ].join(" OR ");
 
 // ── Stage 1: Subject blocklist (zero cost) ───────────────────────────
@@ -26,14 +34,27 @@ const SUBJECT_BLOCKLIST = [
   "promotion", "newsletter", "survey", "feedback",
   "price alert", "fare alert", "explore", "discover", "dream",
   "flash sale", "price drop", "exclusive offer", "limited time",
+  "membership rewards", "gold card", "platinum card", "delta card",
+  "year-end summary", "unlock $", "annual value", "perks await",
+  "special offer", "rewards is here", "don't miss out",
+  "your trip with uber", "uber receipt",
+  "car upgrade", "travel insurance",
+  "electronic messages information",
 ];
 
 // ── Stage 2: Haiku triage prompt ─────────────────────────────────────
 const TRIAGE_PROMPT = `You are an email classifier. For each email below, respond with its number and either BOOKING or OTHER.
 
-BOOKING = an actual travel booking confirmation, e-ticket, itinerary, or receipt for a completed purchase of transport (flight, train, bus, ferry) or accommodation with specific dates and routes.
+BOOKING = any of these:
+- Flight, train, bus, or ferry booking confirmation with dates/routes
+- Hotel, Airbnb, or accommodation reservation with check-in/check-out dates
+- E-ticket or boarding pass
+- Restaurant reservation at a specific location and date (helps prove presence in a country)
+- Any confirmation email that contains a specific date AND a specific location/destination
 
-OTHER = promotional email, deal alert, newsletter, loyalty program update, credit card offer, survey, travel inspiration, price tracking, or anything that is NOT a confirmed booking with real dates.
+When in doubt, classify as BOOKING. False positives are acceptable — false negatives lose important tax data.
+
+OTHER = promotional email, deal/sale alert, newsletter, loyalty program update, credit card offer, survey, travel inspiration, price tracking, or emails with NO specific booking date.
 
 Return ONLY a JSON array like: [{"email": 1, "label": "BOOKING"}, {"email": 2, "label": "OTHER"}]`;
 
@@ -305,7 +326,7 @@ export async function POST(request: NextRequest) {
     // ═══════════════════════════════════════════════════════════════════
     const afterDate = `${tax_year - 1}/09/01`;
     const beforeDate = `${tax_year + 1}/01/31`;
-    const query = `(${GMAIL_SEARCH_QUERY}) after:${afterDate} before:${beforeDate} category:primary`;
+    const query = `(${GMAIL_SEARCH_QUERY}) after:${afterDate} before:${beforeDate} -category:promotions -category:social`;
     const searchUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=50`;
 
     const searchResponse = await fetch(searchUrl, {
