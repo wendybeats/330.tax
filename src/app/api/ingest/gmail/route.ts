@@ -3,6 +3,9 @@ import { createClient } from "@/lib/supabase/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { calculateFullDays } from "@/lib/trips";
 
+// Extend function timeout for email processing
+export const maxDuration = 60;
+
 const GMAIL_SEARCH_QUERY = [
   '"booking confirmation"',
   '"e-ticket"',
@@ -132,7 +135,7 @@ export async function POST(request: NextRequest) {
     const afterDate = `${tax_year}/01/01`;
     const beforeDate = `${tax_year + 1}/01/01`;
     const query = `(${GMAIL_SEARCH_QUERY}) after:${afterDate} before:${beforeDate}`;
-    const searchUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=30`;
+    const searchUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=15`;
 
     const searchResponse = await fetch(searchUrl, {
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -201,7 +204,7 @@ export async function POST(request: NextRequest) {
       body: string;
     }> = [];
 
-    const fetchPromises = newMessages.slice(0, 20).map(async (msg) => {
+    const fetchPromises = newMessages.slice(0, 10).map(async (msg) => {
       try {
         const msgUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=full`;
         const msgResponse = await fetch(msgUrl, {
@@ -220,7 +223,7 @@ export async function POST(request: NextRequest) {
           id: msg.id,
           subject,
           snippet: msgData.snippet,
-          body: body.slice(0, 3000),
+          body: body.slice(0, 1500),
         };
       } catch {
         return null;
