@@ -9,6 +9,7 @@ export const maxDuration = 60;
 // Generic confirmation phrases that work across all airlines/platforms
 // Combined with category:primary to exclude promotional emails
 const GMAIL_SEARCH_QUERY = [
+  // Universal confirmation phrases
   '"booking confirmed"',
   '"reservation confirmed"',
   '"booking confirmation"',
@@ -19,37 +20,51 @@ const GMAIL_SEARCH_QUERY = [
   '"booking reference"',
   '"record locator"',
   '"check-in confirmation"',
+  '"itinerary receipt"',
+  '"your reservation"',
+  '"ticket confirmation"',
+  '"travel itinerary"',
+  '"PNR"',
+  // Subject-line patterns
   'subject:confirmation (flight OR booking OR reservation OR hotel)',
-  'subject:"e-ticket" OR subject:"itinerary receipt"',
-  'subject:"your trip" (confirmation OR confirmed OR receipt)',
+  'subject:"e-ticket"',
+  'subject:"itinerary"',
+  'subject:"your trip"',
+  'subject:"your booking"',
+  'subject:"your flight"',
+  'subject:"travel document"',
+  'subject:"check-in"',
 ].join(" OR ");
 
 const BATCH_PROMPT = `You are a travel document parser for US expats tracking the IRS Physical Presence Test.
 
-I will give you multiple email snippets. For EACH email that contains a real travel booking (flight, train, bus, hotel check-in/out), extract the trip data.
+I will give you multiple email snippets from booking confirmations. Your job is to reconstruct the user's travel timeline — specifically, the STAYS in each country (when they arrived and when they left).
 
 Return ONLY valid JSON in this format:
 {
   "trips": [
     {
-      "country": "full country name of destination",
+      "country": "full country name where user STAYED",
       "date_arrived": "YYYY-MM-DD",
       "date_departed": "YYYY-MM-DD",
       "confidence": "HIGH" | "MEDIUM" | "LOW",
-      "source_subject": "the email subject this came from",
-      "notes": "brief note about the booking"
+      "source_subject": "the email subject(s) this came from",
+      "notes": "brief note about how dates were determined"
     }
   ]
 }
 
-Rules:
-- Use full country names (e.g., "United States", "Turkey", "Georgia", "Colombia")
-- For flights: the destination country is where you arrive. Create one trip per destination.
-- For multi-leg trips (A->B->C), create separate entries for B and C
-- If an email is promotional, a newsletter, or not an actual booking, SKIP it
-- If dates are unclear, set confidence to LOW
-- Combine round-trip bookings into one trip entry with arrival and departure dates
-- If only one date is available, use it for both arrived and departed`;
+CRITICAL RULES:
+- The goal is to determine STAYS in countries, not individual flights.
+- A round-trip booking (e.g., NYC→Istanbul Dec 13, Istanbul→NYC Dec 27) = one trip: Turkey, arrived Dec 13, departed Dec 27.
+- If you see an outbound flight to country X and a return flight from country X in separate emails, COMBINE them into one trip.
+- For one-way flights, use the arrival date. Set departed = arrived and confidence = LOW since you don't know when they left.
+- For multi-city trips (A→B→C→A), create a separate trip for each country stayed in. Use the next flight's date as the departure from the previous country.
+- If an email is promotional, a newsletter, a deal alert, or not an actual booking confirmation, SKIP it entirely.
+- Use full country names (e.g., "United States", "Turkey", "Georgia", "Colombia", "United Kingdom")
+- If dates are ambiguous, set confidence to LOW and explain in notes.
+- Hotels/Airbnb: check-in = arrived, check-out = departed.
+- Look at ALL the emails together to build the most complete picture of each trip's duration.`;
 
 interface GmailMessage {
   id: string;
