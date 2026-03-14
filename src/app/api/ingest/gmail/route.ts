@@ -6,13 +6,22 @@ import { calculateFullDays } from "@/lib/trips";
 // Extend function timeout for email processing
 export const maxDuration = 60;
 
+// Generic confirmation phrases that work across all airlines/platforms
+// Combined with category:primary to exclude promotional emails
 const GMAIL_SEARCH_QUERY = [
-  '"booking confirmation"',
-  '"e-ticket"',
-  '"itinerary"',
+  '"booking confirmed"',
   '"reservation confirmed"',
+  '"booking confirmation"',
   '"flight confirmation"',
-  '"travel confirmation"',
+  '"e-ticket"',
+  '"boarding pass"',
+  '"your booking is confirmed"',
+  '"booking reference"',
+  '"record locator"',
+  '"check-in confirmation"',
+  'subject:confirmation (flight OR booking OR reservation OR hotel)',
+  'subject:"e-ticket" OR subject:"itinerary receipt"',
+  'subject:"your trip" (confirmation OR confirmed OR receipt)',
 ].join(" OR ");
 
 const BATCH_PROMPT = `You are a travel document parser for US expats tracking the IRS Physical Presence Test.
@@ -134,8 +143,8 @@ export async function POST(request: NextRequest) {
     // Search Gmail for travel emails
     const afterDate = `${tax_year}/01/01`;
     const beforeDate = `${tax_year + 1}/01/01`;
-    const query = `(${GMAIL_SEARCH_QUERY}) after:${afterDate} before:${beforeDate}`;
-    const searchUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=15`;
+    const query = `(${GMAIL_SEARCH_QUERY}) after:${afterDate} before:${beforeDate} category:primary`;
+    const searchUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=50`;
 
     const searchResponse = await fetch(searchUrl, {
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -204,7 +213,7 @@ export async function POST(request: NextRequest) {
       body: string;
     }> = [];
 
-    const fetchPromises = newMessages.slice(0, 10).map(async (msg) => {
+    const fetchPromises = newMessages.slice(0, 30).map(async (msg) => {
       try {
         const msgUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=full`;
         const msgResponse = await fetch(msgUrl, {
@@ -223,7 +232,7 @@ export async function POST(request: NextRequest) {
           id: msg.id,
           subject,
           snippet: msgData.snippet,
-          body: body.slice(0, 1500),
+          body: body.slice(0, 3000),
         };
       } catch {
         return null;
