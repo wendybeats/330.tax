@@ -306,7 +306,7 @@ export async function POST(request: NextRequest) {
     const afterDate = `${tax_year - 1}/09/01`;
     const beforeDate = `${tax_year + 1}/01/31`;
     const query = `(${GMAIL_SEARCH_QUERY}) after:${afterDate} before:${beforeDate} category:primary`;
-    const searchUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=75`;
+    const searchUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=50`;
 
     const searchResponse = await fetch(searchUrl, {
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -370,7 +370,7 @@ export async function POST(request: NextRequest) {
     // Fetch email bodies in parallel
     const emailSummaries: EmailSummary[] = [];
 
-    const fetchPromises = newMessages.slice(0, 75).map(async (msg) => {
+    const fetchPromises = newMessages.slice(0, 50).map(async (msg) => {
       try {
         const msgUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=full`;
         const msgResponse = await fetch(msgUrl, {
@@ -418,15 +418,15 @@ export async function POST(request: NextRequest) {
 
     if (filtered.length === 0) {
       // Store raw_sources so we don't re-fetch these
-      for (const email of emailSummaries) {
-        await supabase.from("raw_sources").insert({
+      await supabase.from("raw_sources").insert(
+        emailSummaries.map((email) => ({
           user_id: user.id,
           source_type: "gmail",
           gmail_message_id: email.id,
           raw_content: `Subject: ${email.subject}\n\n${email.body}`.slice(0, 50000),
           parsed_at: new Date().toISOString(),
-        });
-      }
+        }))
+      );
       return NextResponse.json({
         message: "All emails were filtered as non-booking content",
         total_found: messages.length,
@@ -493,15 +493,15 @@ export async function POST(request: NextRequest) {
 
     if (bookingEmails.length === 0) {
       // Store raw_sources for all fetched emails
-      for (const email of emailSummaries) {
-        await supabase.from("raw_sources").insert({
+      await supabase.from("raw_sources").insert(
+        emailSummaries.map((email) => ({
           user_id: user.id,
           source_type: "gmail",
           gmail_message_id: email.id,
           raw_content: `Subject: ${email.subject}\n\n${email.body}`.slice(0, 50000),
           parsed_at: new Date().toISOString(),
-        });
-      }
+        }))
+      );
       return NextResponse.json({
         message: "No booking confirmations found in emails",
         total_found: messages.length,
@@ -554,15 +554,15 @@ export async function POST(request: NextRequest) {
 
     if (allLegs.length === 0) {
       // Store raw_sources
-      for (const email of emailSummaries) {
-        await supabase.from("raw_sources").insert({
+      await supabase.from("raw_sources").insert(
+        emailSummaries.map((email) => ({
           user_id: user.id,
           source_type: "gmail",
           gmail_message_id: email.id,
           raw_content: `Subject: ${email.subject}\n\n${email.body}`.slice(0, 50000),
           parsed_at: new Date().toISOString(),
-        });
-      }
+        }))
+      );
       return NextResponse.json({
         message: `Found ${bookingEmails.length} booking emails but could not extract any transport legs`,
         total_found: messages.length,
@@ -618,48 +618,52 @@ export async function POST(request: NextRequest) {
     // Database writes
     // ═══════════════════════════════════════════════════════════════════
 
-    // Store raw_sources for all fetched emails
-    for (const email of emailSummaries) {
-      await supabase.from("raw_sources").insert({
+    // Store raw_sources in a single batch insert
+    await supabase.from("raw_sources").insert(
+      emailSummaries.map((email) => ({
         user_id: user.id,
         source_type: "gmail",
         gmail_message_id: email.id,
         raw_content: `Subject: ${email.subject}\n\n${email.body}`.slice(0, 50000),
         parsed_at: new Date().toISOString(),
-      });
-    }
+      }))
+    );
 
-    // Create trip records from assembled stays
+    // Create trip records from assembled stays in a single batch
+    const tripRows = stays
+      .filter((stay) => {
+        if (!stay.country || !stay.date_arrived) return false;
+        if (!stay.date_arrived.match(/^\d{4}-\d{2}-\d{2}$/)) return false;
+        return true;
+      })
+      .map((stay) => {
+        const dateDeparted = stay.date_departed?.match(/^\d{4}-\d{2}-\d{2}$/)
+          ? stay.date_departed
+          : stay.date_arrived;
+        const earlier =
+          stay.date_arrived <= dateDeparted ? stay.date_arrived : dateDeparted;
+        const later =
+          stay.date_arrived > dateDeparted ? stay.date_arrived : dateDeparted;
+        return {
+          user_id: user.id,
+          tax_year,
+          country: stay.country,
+          date_arrived: earlier,
+          date_departed: later,
+          full_days_present: calculateFullDays(earlier, later),
+          confidence: stay.confidence || "MEDIUM",
+          notes: stay.notes || "Gmail multi-stage pipeline",
+          sort_order: 0,
+        };
+      });
+
     let tripsCreated = 0;
-
-    for (const stay of stays) {
-      if (!stay.country || !stay.date_arrived) continue;
-      if (!stay.date_arrived.match(/^\d{4}-\d{2}-\d{2}$/)) continue;
-
-      const dateDeparted = stay.date_departed?.match(/^\d{4}-\d{2}-\d{2}$/)
-        ? stay.date_departed
-        : stay.date_arrived;
-
-      const earlier =
-        stay.date_arrived <= dateDeparted ? stay.date_arrived : dateDeparted;
-      const later =
-        stay.date_arrived > dateDeparted ? stay.date_arrived : dateDeparted;
-
-      const fullDays = calculateFullDays(earlier, later);
-
-      const { error: tripError } = await supabase.from("trips").insert({
-        user_id: user.id,
-        tax_year,
-        country: stay.country,
-        date_arrived: earlier,
-        date_departed: later,
-        full_days_present: fullDays,
-        confidence: stay.confidence || "MEDIUM",
-        notes: stay.notes || "Gmail multi-stage pipeline",
-        sort_order: 0,
-      });
-
-      if (!tripError) tripsCreated++;
+    if (tripRows.length > 0) {
+      const { data: inserted } = await supabase
+        .from("trips")
+        .insert(tripRows)
+        .select("id");
+      tripsCreated = inserted?.length || 0;
     }
 
     // Collect subjects that were filtered out at each stage for debugging
