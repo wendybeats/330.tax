@@ -4,7 +4,7 @@ import Anthropic from "@anthropic-ai/sdk"
 import { detectGaps, sortTripsChronologically } from "@/lib/trips"
 import type { Trip, TimelineGap } from "@/types/database"
 
-const anthropic = new Anthropic()
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 export async function POST(request: NextRequest) {
   const supabase = await createClient()

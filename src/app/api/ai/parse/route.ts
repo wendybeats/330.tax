@@ -3,7 +3,7 @@ import { createClient } from "@/lib/supabase/server"
 import Anthropic from "@anthropic-ai/sdk"
 import type { ParsedBooking } from "@/types/database"
 
-const anthropic = new Anthropic() // uses ANTHROPIC_API_KEY env var
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 const EXTRACTION_PROMPT = `You are a travel document parser for the IRS Foreign Earned Income Exclusion (Form 2555) Physical Presence Test. Extract structured travel booking data from the following content.
 
