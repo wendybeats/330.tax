@@ -6,65 +6,101 @@ import { calculateFullDays } from "@/lib/trips";
 // Extend function timeout for email processing
 export const maxDuration = 60;
 
-// Generic confirmation phrases that work across all airlines/platforms
-// Combined with category:primary to exclude promotional emails
+// ── Stage 0: Gmail search terms ──────────────────────────────────────
 const GMAIL_SEARCH_QUERY = [
-  // Universal confirmation phrases
-  '"booking confirmed"',
-  '"reservation confirmed"',
   '"booking confirmation"',
-  '"flight confirmation"',
   '"e-ticket"',
+  '"itinerary"',
+  '"reservation confirmed"',
+  '"your trip"',
+  '"flight receipt"',
+  '"train ticket"',
+  '"bus ticket"',
   '"boarding pass"',
-  '"your booking is confirmed"',
-  '"booking reference"',
-  '"record locator"',
   '"check-in confirmation"',
-  '"itinerary receipt"',
-  '"your reservation"',
-  '"ticket confirmation"',
-  '"travel itinerary"',
-  '"PNR"',
-  // Subject-line patterns
-  'subject:confirmation (flight OR booking OR reservation OR hotel)',
-  'subject:"e-ticket"',
-  'subject:"itinerary"',
-  'subject:"your trip"',
-  'subject:"your booking"',
-  'subject:"your flight"',
-  'subject:"travel document"',
-  'subject:"check-in"',
 ].join(" OR ");
 
-const BATCH_PROMPT = `You are a travel document parser for US expats tracking the IRS Physical Presence Test.
+// ── Stage 1: Subject blocklist (zero cost) ───────────────────────────
+const SUBJECT_BLOCKLIST = [
+  "sale", "% off", "deal", "earn miles", "credit card", "statement",
+  "promotion", "newsletter", "survey", "feedback",
+  "price alert", "fare alert", "explore", "discover", "dream",
+  "flash sale", "price drop", "exclusive offer", "limited time",
+];
 
-I will give you multiple email snippets from booking confirmations. Your job is to reconstruct the user's travel timeline — specifically, the STAYS in each country (when they arrived and when they left).
+// ── Stage 2: Haiku triage prompt ─────────────────────────────────────
+const TRIAGE_PROMPT = `You are an email classifier. For each email below, respond with its number and either BOOKING or OTHER.
 
-Return ONLY valid JSON in this format:
+BOOKING = an actual travel booking confirmation, e-ticket, itinerary, or receipt for a completed purchase of transport (flight, train, bus, ferry) or accommodation with specific dates and routes.
+
+OTHER = promotional email, deal alert, newsletter, loyalty program update, credit card offer, survey, travel inspiration, price tracking, or anything that is NOT a confirmed booking with real dates.
+
+Return ONLY a JSON array like: [{"email": 1, "label": "BOOKING"}, {"email": 2, "label": "OTHER"}]`;
+
+// ── Stage 3: Sonnet extraction prompt ────────────────────────────────
+const EXTRACTION_PROMPT = `Extract individual transport LEGS from these booking confirmation emails.
+
+A LEG is a single one-way segment of transport. A round-trip flight has 2 legs. A multi-city itinerary A→B→C has 2 legs.
+
+Return ONLY valid JSON:
 {
-  "trips": [
+  "legs": [
     {
-      "country": "full country name where user STAYED",
-      "date_arrived": "YYYY-MM-DD",
-      "date_departed": "YYYY-MM-DD",
-      "confidence": "HIGH" | "MEDIUM" | "LOW",
-      "source_subject": "the email subject(s) this came from",
-      "notes": "brief note about how dates were determined"
+      "email_index": 1,
+      "type": "flight | train | bus | ferry",
+      "operator": "airline/operator name",
+      "service_number": "flight/train number or empty string",
+      "origin_city": "city name",
+      "origin_country": "full country name",
+      "destination_city": "city name",
+      "destination_country": "full country name",
+      "departure_date": "YYYY-MM-DD",
+      "arrival_date": "YYYY-MM-DD",
+      "booking_reference": "PNR/confirmation code or empty string"
     }
   ]
 }
 
-CRITICAL RULES:
-- The goal is to determine STAYS in countries, not individual flights.
-- A round-trip booking (e.g., NYC→Istanbul Dec 13, Istanbul→NYC Dec 27) = one trip: Turkey, arrived Dec 13, departed Dec 27.
-- If you see an outbound flight to country X and a return flight from country X in separate emails, COMBINE them into one trip.
-- For one-way flights, use the arrival date. Set departed = arrived and confidence = LOW since you don't know when they left.
-- For multi-city trips (A→B→C→A), create a separate trip for each country stayed in. Use the next flight's date as the departure from the previous country.
-- If an email is promotional, a newsletter, a deal alert, or not an actual booking confirmation, SKIP it entirely.
-- Use full country names (e.g., "United States", "Turkey", "Georgia", "Colombia", "United Kingdom")
-- If dates are ambiguous, set confidence to LOW and explain in notes.
-- Hotels/Airbnb: check-in = arrived, check-out = departed.
-- Look at ALL the emails together to build the most complete picture of each trip's duration.`;
+Rules:
+- Extract EVERY leg, including return flights and connections
+- A round trip has TWO legs (outbound + return) — list both
+- Use full country names (e.g., "United States", "Turkey", "United Kingdom")
+- If no actual booking data is found in an email, do not create legs for it
+- Departure and arrival dates may differ for overnight flights/trains`;
+
+// ── Stage 4: Sonnet assembly prompt (template) ───────────────────────
+function buildAssemblyPrompt(taxHomeCountry: string) {
+  return `You are an IRS Physical Presence Test travel timeline builder.
+
+Given a list of transport LEGS and the user's tax home country, assemble them into COUNTRY STAYS.
+
+Tax home country: ${taxHomeCountry}
+
+Rules:
+1. MERGE CONNECTIONS: If leg A arrives in Frankfurt at 14:00 and leg B departs Frankfurt the same day, Frankfurt is a transit point, NOT a separate stay. Only create a stay for the final destination.
+2. LINK OUTBOUND AND RETURN: If the user flies US→Turkey on Dec 13 and Turkey→US on Dec 27, that is ONE stay in Turkey from Dec 13 to Dec 27.
+3. TAX HOME ASSUMPTION: Between trips abroad, assume the user is in ${taxHomeCountry}. Do NOT create stays for ${taxHomeCountry} — only create stays for other countries.
+4. MULTI-COUNTRY TRIPS: If the user flies A→B, stays, then B→C, stays, then C→A, create separate stays for B and C. Use the next leg's departure date as the departure from the previous country.
+5. ONE-WAY LEGS with no return: If you only see an outbound leg with no matching return, set confidence to LOW and note it.
+6. WITHIN-COUNTRY TRAVEL: If consecutive legs stay within the same country (e.g., Istanbul→Izmir), do NOT create a separate stay. The user never left that country.
+7. Dates must be YYYY-MM-DD format.
+8. Do NOT calculate full_days — just provide accurate arrival and departure dates.
+
+Return ONLY valid JSON:
+{
+  "stays": [
+    {
+      "country": "full country name",
+      "date_arrived": "YYYY-MM-DD",
+      "date_departed": "YYYY-MM-DD",
+      "confidence": "HIGH" | "MEDIUM" | "LOW",
+      "notes": "how this stay was determined"
+    }
+  ]
+}`;
+}
+
+// ── Types ────────────────────────────────────────────────────────────
 
 interface GmailMessage {
   id: string;
@@ -88,9 +124,106 @@ interface GmailMessageDetail {
   };
 }
 
+interface EmailSummary {
+  id: string;
+  subject: string;
+  snippet: string;
+  body: string;
+}
+
+interface ExtractedLeg {
+  email_index: number;
+  type: string;
+  operator: string;
+  service_number: string;
+  origin_city: string;
+  origin_country: string;
+  destination_city: string;
+  destination_country: string;
+  departure_date: string;
+  arrival_date: string;
+  booking_reference: string;
+}
+
+interface AssembledStay {
+  country: string;
+  date_arrived: string;
+  date_departed: string;
+  confidence: string;
+  notes: string;
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────
+
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
+
+function chunkArray<T>(arr: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) {
+    chunks.push(arr.slice(i, i + size));
+  }
+  return chunks;
+}
+
+function stripHtml(html: string): string {
+  let text = html;
+  text = text.replace(/<style[\s\S]*?<\/style>/gi, "");
+  text = text.replace(/<script[\s\S]*?<\/script>/gi, "");
+  text = text.replace(/<[^>]+>/g, " ");
+  text = text.replace(/&amp;/g, "&");
+  text = text.replace(/&lt;/g, "<");
+  text = text.replace(/&gt;/g, ">");
+  text = text.replace(/&quot;/g, '"');
+  text = text.replace(/&#39;/g, "'");
+  text = text.replace(/&nbsp;/g, " ");
+  text = text.replace(/&zwnj;/g, "");
+  text = text.replace(/&#(\d+);/g, (_, code) =>
+    String.fromCharCode(parseInt(code))
+  );
+  text = text.replace(/\s{2,}/g, "\n");
+  return text.trim();
+}
+
+function parseJsonFromAI(response: Anthropic.Message): unknown {
+  const responseText = response.content
+    .filter((block): block is Anthropic.TextBlock => block.type === "text")
+    .map((block) => block.text)
+    .join("");
+  const jsonMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)```/);
+  const jsonString = jsonMatch ? jsonMatch[1].trim() : responseText.trim();
+  return JSON.parse(jsonString);
+}
+
+function extractEmailBody(message: GmailMessageDetail): string {
+  if (message.payload.parts) {
+    for (const part of message.payload.parts) {
+      if (part.parts) {
+        const textPart = part.parts.find((p) => p.mimeType === "text/plain");
+        const htmlPart = part.parts.find((p) => p.mimeType === "text/html");
+        const nested = textPart || htmlPart;
+        if (nested?.body?.data) {
+          return Buffer.from(nested.body.data, "base64").toString("utf-8");
+        }
+      }
+      if (
+        (part.mimeType === "text/plain" || part.mimeType === "text/html") &&
+        part.body?.data
+      ) {
+        return Buffer.from(part.body.data, "base64").toString("utf-8");
+      }
+    }
+  }
+
+  if (message.payload.body?.data) {
+    return Buffer.from(message.payload.body.data, "base64").toString("utf-8");
+  }
+
+  return message.snippet || "";
+}
+
+// ── Main handler ─────────────────────────────────────────────────────
 
 export async function POST(request: NextRequest) {
   const supabase = await createClient();
@@ -110,6 +243,16 @@ export async function POST(request: NextRequest) {
       { status: 400 }
     );
   }
+
+  // Get user's tax home for Stage 4 assembly
+  const { data: taxProfile } = await supabase
+    .from("tax_profiles")
+    .select("tax_home_country")
+    .eq("user_id", user.id)
+    .eq("tax_year", tax_year)
+    .maybeSingle();
+
+  const taxHomeCountry = taxProfile?.tax_home_country || "Georgia";
 
   // Get Google access token
   const {
@@ -155,11 +298,15 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    // Search Gmail for travel emails
-    const afterDate = `${tax_year}/01/01`;
-    const beforeDate = `${tax_year + 1}/01/01`;
+    // ═══════════════════════════════════════════════════════════════════
+    // STAGE 0: Gmail Query
+    // 4-month pre-buffer, 1-month post-buffer to catch bookings made
+    // before/after the tax year boundaries
+    // ═══════════════════════════════════════════════════════════════════
+    const afterDate = `${tax_year - 1}/09/01`;
+    const beforeDate = `${tax_year + 1}/01/31`;
     const query = `(${GMAIL_SEARCH_QUERY}) after:${afterDate} before:${beforeDate} category:primary`;
-    const searchUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=50`;
+    const searchUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=75`;
 
     const searchResponse = await fetch(searchUrl, {
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -220,15 +367,10 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Fetch all email snippets in parallel (fast — just Gmail API)
-    const emailSummaries: Array<{
-      id: string;
-      subject: string;
-      snippet: string;
-      body: string;
-    }> = [];
+    // Fetch email bodies in parallel
+    const emailSummaries: EmailSummary[] = [];
 
-    const fetchPromises = newMessages.slice(0, 30).map(async (msg) => {
+    const fetchPromises = newMessages.slice(0, 75).map(async (msg) => {
       try {
         const msgUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=full`;
         const msgResponse = await fetch(msgUrl, {
@@ -237,18 +379,14 @@ export async function POST(request: NextRequest) {
         if (!msgResponse.ok) return null;
 
         const msgData: GmailMessageDetail = await msgResponse.json();
-        const body = extractEmailBody(msgData);
+        const rawBody = extractEmailBody(msgData);
+        const body = stripHtml(rawBody).slice(0, 2000);
         const subject =
           msgData.payload.headers.find(
             (h) => h.name.toLowerCase() === "subject"
           )?.value || "";
 
-        return {
-          id: msg.id,
-          subject,
-          snippet: msgData.snippet,
-          body: body.slice(0, 3000),
-        };
+        return { id: msg.id, subject, snippet: msgData.snippet, body };
       } catch {
         return null;
       }
@@ -269,50 +407,28 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Build a single prompt with all emails for one Claude call
-    const emailBlock = emailSummaries
-      .map(
-        (e, i) =>
-          `--- EMAIL ${i + 1} ---\nSubject: ${e.subject}\n\n${e.body}\n--- END EMAIL ${i + 1} ---`
-      )
-      .join("\n\n");
-
-    const aiResponse = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 4096,
-      messages: [
-        {
-          role: "user",
-          content: `${BATCH_PROMPT}\n\nHere are ${emailSummaries.length} emails to parse:\n\n${emailBlock}`,
-        },
-      ],
+    // ═══════════════════════════════════════════════════════════════════
+    // STAGE 1: Pre-filter (zero cost)
+    // Drop obvious promos by subject line before any AI call
+    // ═══════════════════════════════════════════════════════════════════
+    const filtered = emailSummaries.filter((email) => {
+      const subjectLower = email.subject.toLowerCase();
+      return !SUBJECT_BLOCKLIST.some((term) => subjectLower.includes(term));
     });
 
-    const responseText = aiResponse.content
-      .filter(
-        (block): block is Anthropic.TextBlock => block.type === "text"
-      )
-      .map((block) => block.text)
-      .join("");
-
-    let parsedData: { trips: Array<{
-      country: string;
-      date_arrived: string;
-      date_departed: string;
-      confidence: string;
-      source_subject: string;
-      notes: string;
-    }> };
-
-    try {
-      const jsonMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)```/);
-      const jsonString = jsonMatch
-        ? jsonMatch[1].trim()
-        : responseText.trim();
-      parsedData = JSON.parse(jsonString);
-    } catch {
+    if (filtered.length === 0) {
+      // Store raw_sources so we don't re-fetch these
+      for (const email of emailSummaries) {
+        await supabase.from("raw_sources").insert({
+          user_id: user.id,
+          source_type: "gmail",
+          gmail_message_id: email.id,
+          raw_content: `Subject: ${email.subject}\n\n${email.body}`.slice(0, 50000),
+          parsed_at: new Date().toISOString(),
+        });
+      }
       return NextResponse.json({
-        error: "Failed to parse AI response",
+        message: "All emails were filtered as non-booking content",
         total_found: messages.length,
         new_processed: emailSummaries.length,
         successfully_parsed: 0,
@@ -320,7 +436,189 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Store raw_sources for processed emails
+    // ═══════════════════════════════════════════════════════════════════
+    // STAGE 2: Haiku Triage (~$0.01)
+    // Cheap classification: is this a real booking or junk?
+    // Batched 12 emails per call, run in parallel
+    // ═══════════════════════════════════════════════════════════════════
+    const TRIAGE_BATCH_SIZE = 12;
+    const triageBatches = chunkArray(filtered, TRIAGE_BATCH_SIZE);
+    const bookingEmails: EmailSummary[] = [];
+
+    const triagePromises = triageBatches.map(async (batch) => {
+      const emailBlock = batch
+        .map(
+          (e, i) =>
+            `[Email ${i + 1}] Subject: ${e.subject}\n${e.body.slice(0, 500)}`
+        )
+        .join("\n\n");
+
+      try {
+        const response = await anthropic.messages.create({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 1024,
+          messages: [
+            {
+              role: "user",
+              content: `${TRIAGE_PROMPT}\n\n${emailBlock}`,
+            },
+          ],
+        });
+
+        const labels = parseJsonFromAI(response) as Array<{
+          email: number;
+          label: string;
+        }>;
+        const confirmed: EmailSummary[] = [];
+        for (const label of labels) {
+          if (
+            label.label === "BOOKING" &&
+            label.email >= 1 &&
+            label.email <= batch.length
+          ) {
+            confirmed.push(batch[label.email - 1]);
+          }
+        }
+        return confirmed;
+      } catch {
+        // On triage failure, pass all emails through (false positives > false negatives)
+        return batch;
+      }
+    });
+
+    const triageResults = await Promise.all(triagePromises);
+    for (const confirmed of triageResults) {
+      bookingEmails.push(...confirmed);
+    }
+
+    if (bookingEmails.length === 0) {
+      // Store raw_sources for all fetched emails
+      for (const email of emailSummaries) {
+        await supabase.from("raw_sources").insert({
+          user_id: user.id,
+          source_type: "gmail",
+          gmail_message_id: email.id,
+          raw_content: `Subject: ${email.subject}\n\n${email.body}`.slice(0, 50000),
+          parsed_at: new Date().toISOString(),
+        });
+      }
+      return NextResponse.json({
+        message: "No booking confirmations found in emails",
+        total_found: messages.length,
+        new_processed: emailSummaries.length,
+        successfully_parsed: 0,
+        trips_created: 0,
+      });
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // STAGE 3: Sonnet Extraction (~$0.10)
+    // Extract individual transport LEGS from confirmed bookings
+    // Batched 4 emails per call, run in parallel
+    // ═══════════════════════════════════════════════════════════════════
+    const EXTRACT_BATCH_SIZE = 4;
+    const extractBatches = chunkArray(bookingEmails, EXTRACT_BATCH_SIZE);
+    const allLegs: ExtractedLeg[] = [];
+
+    const extractionPromises = extractBatches.map(async (batch) => {
+      const emailBlock = batch
+        .map(
+          (e, i) =>
+            `--- EMAIL ${i + 1} ---\nSubject: ${e.subject}\n\n${e.body}\n--- END EMAIL ${i + 1} ---`
+        )
+        .join("\n\n");
+
+      try {
+        const response = await anthropic.messages.create({
+          model: "claude-sonnet-4-6",
+          max_tokens: 4096,
+          messages: [
+            {
+              role: "user",
+              content: `${EXTRACTION_PROMPT}\n\n${emailBlock}`,
+            },
+          ],
+        });
+
+        const parsed = parseJsonFromAI(response) as { legs: ExtractedLeg[] };
+        return parsed.legs || [];
+      } catch {
+        return [];
+      }
+    });
+
+    const extractionResults = await Promise.all(extractionPromises);
+    for (const legs of extractionResults) {
+      allLegs.push(...legs);
+    }
+
+    if (allLegs.length === 0) {
+      // Store raw_sources
+      for (const email of emailSummaries) {
+        await supabase.from("raw_sources").insert({
+          user_id: user.id,
+          source_type: "gmail",
+          gmail_message_id: email.id,
+          raw_content: `Subject: ${email.subject}\n\n${email.body}`.slice(0, 50000),
+          parsed_at: new Date().toISOString(),
+        });
+      }
+      return NextResponse.json({
+        message: `Found ${bookingEmails.length} booking emails but could not extract any transport legs`,
+        total_found: messages.length,
+        new_processed: emailSummaries.length,
+        successfully_parsed: 0,
+        trips_created: 0,
+      });
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // STAGE 4: Sonnet Assembly (~$0.02)
+    // One call: stitch all legs into country stays using tax home context
+    // ═══════════════════════════════════════════════════════════════════
+    const legsBlock = allLegs
+      .map(
+        (leg, i) =>
+          `[Leg ${i}] ${leg.departure_date} ${leg.origin_city} (${leg.origin_country}) → ${leg.destination_city} (${leg.destination_country}) | ${leg.type} ${leg.operator} ${leg.service_number} | ref: ${leg.booking_reference}`
+      )
+      .join("\n");
+
+    let stays: AssembledStay[] = [];
+
+    try {
+      const assemblyResponse = await anthropic.messages.create({
+        model: "claude-sonnet-4-6",
+        max_tokens: 4096,
+        messages: [
+          {
+            role: "user",
+            content: `${buildAssemblyPrompt(taxHomeCountry)}\n\nHere are ${allLegs.length} legs to assemble:\n\n${legsBlock}`,
+          },
+        ],
+      });
+
+      const assemblyData = parseJsonFromAI(assemblyResponse) as {
+        stays: AssembledStay[];
+      };
+      stays = assemblyData.stays || [];
+    } catch {
+      // Fallback: convert each leg into a simple stay
+      stays = allLegs
+        .filter((leg) => leg.destination_country.toUpperCase() !== taxHomeCountry.toUpperCase())
+        .map((leg) => ({
+          country: leg.destination_country,
+          date_arrived: leg.arrival_date || leg.departure_date,
+          date_departed: leg.arrival_date || leg.departure_date,
+          confidence: "LOW",
+          notes: "Fallback: assembly failed, created from individual leg",
+        }));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Database writes
+    // ═══════════════════════════════════════════════════════════════════
+
+    // Store raw_sources for all fetched emails
     for (const email of emailSummaries) {
       await supabase.from("raw_sources").insert({
         user_id: user.id,
@@ -331,34 +629,33 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Create trip records
+    // Create trip records from assembled stays
     let tripsCreated = 0;
-    const trips = parsedData.trips || [];
 
-    for (const trip of trips) {
-      if (!trip.country || !trip.date_arrived) continue;
-      if (!trip.date_arrived.match(/^\d{4}-\d{2}-\d{2}$/)) continue;
+    for (const stay of stays) {
+      if (!stay.country || !stay.date_arrived) continue;
+      if (!stay.date_arrived.match(/^\d{4}-\d{2}-\d{2}$/)) continue;
 
-      const dateDeparted = trip.date_departed?.match(/^\d{4}-\d{2}-\d{2}$/)
-        ? trip.date_departed
-        : trip.date_arrived;
+      const dateDeparted = stay.date_departed?.match(/^\d{4}-\d{2}-\d{2}$/)
+        ? stay.date_departed
+        : stay.date_arrived;
 
       const earlier =
-        trip.date_arrived <= dateDeparted ? trip.date_arrived : dateDeparted;
+        stay.date_arrived <= dateDeparted ? stay.date_arrived : dateDeparted;
       const later =
-        trip.date_arrived > dateDeparted ? trip.date_arrived : dateDeparted;
+        stay.date_arrived > dateDeparted ? stay.date_arrived : dateDeparted;
 
       const fullDays = calculateFullDays(earlier, later);
 
       const { error: tripError } = await supabase.from("trips").insert({
         user_id: user.id,
         tax_year,
-        country: trip.country,
+        country: stay.country,
         date_arrived: earlier,
         date_departed: later,
         full_days_present: fullDays,
-        confidence: trip.confidence || "MEDIUM",
-        notes: trip.notes || `From: ${trip.source_subject || "Gmail"}`,
+        confidence: stay.confidence || "MEDIUM",
+        notes: stay.notes || "Gmail multi-stage pipeline",
         sort_order: 0,
       });
 
@@ -366,10 +663,10 @@ export async function POST(request: NextRequest) {
     }
 
     return NextResponse.json({
-      message: `Scanned ${emailSummaries.length} emails, found ${trips.length} bookings, created ${tripsCreated} trips`,
+      message: `Scanned ${emailSummaries.length} emails → ${filtered.length} passed filter → ${bookingEmails.length} confirmed bookings → ${allLegs.length} legs extracted → ${stays.length} stays assembled → ${tripsCreated} trips created`,
       total_found: messages.length,
       new_processed: emailSummaries.length,
-      successfully_parsed: trips.length,
+      successfully_parsed: stays.length,
       trips_created: tripsCreated,
     });
   } catch (error) {
@@ -379,31 +676,4 @@ export async function POST(request: NextRequest) {
       { status: 500 }
     );
   }
-}
-
-function extractEmailBody(message: GmailMessageDetail): string {
-  if (message.payload.parts) {
-    for (const part of message.payload.parts) {
-      if (part.parts) {
-        const textPart = part.parts.find((p) => p.mimeType === "text/plain");
-        const htmlPart = part.parts.find((p) => p.mimeType === "text/html");
-        const nested = textPart || htmlPart;
-        if (nested?.body?.data) {
-          return Buffer.from(nested.body.data, "base64").toString("utf-8");
-        }
-      }
-      if (
-        (part.mimeType === "text/plain" || part.mimeType === "text/html") &&
-        part.body?.data
-      ) {
-        return Buffer.from(part.body.data, "base64").toString("utf-8");
-      }
-    }
-  }
-
-  if (message.payload.body?.data) {
-    return Buffer.from(message.payload.body.data, "base64").toString("utf-8");
-  }
-
-  return message.snippet || "";
 }
