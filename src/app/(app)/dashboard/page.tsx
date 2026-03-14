@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ScanEmailsButton } from "@/components/scan-emails-button";
 
 function isUSCountry(country: string): boolean {
   const upper = country.toUpperCase();
@@ -365,16 +366,7 @@ export default async function DashboardPage() {
                   Add Trip
                 </Button>
               </Link>
-              <Link href="/timeline" className="block">
-                <Button
-                  variant="outline"
-                  size="lg"
-                  className="w-full justify-start gap-2"
-                >
-                  <Mail className="size-4" />
-                  Scan Emails
-                </Button>
-              </Link>
+              <ScanEmailsButton taxYear={taxProfile.tax_year} />
               <Link href="/export" className="block">
                 <Button
                   variant="outline"
