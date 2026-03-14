@@ -662,12 +662,26 @@ export async function POST(request: NextRequest) {
       if (!tripError) tripsCreated++;
     }
 
+    // Collect subjects that were filtered out at each stage for debugging
+    const filteredOutSubjects = emailSummaries
+      .filter((e) => !filtered.includes(e))
+      .map((e) => e.subject);
+    const triagedOutSubjects = filtered
+      .filter((e) => !bookingEmails.includes(e))
+      .map((e) => e.subject);
+
     return NextResponse.json({
       message: `Scanned ${emailSummaries.length} emails → ${filtered.length} passed filter → ${bookingEmails.length} confirmed bookings → ${allLegs.length} legs extracted → ${stays.length} stays assembled → ${tripsCreated} trips created`,
       total_found: messages.length,
       new_processed: emailSummaries.length,
       successfully_parsed: stays.length,
       trips_created: tripsCreated,
+      debug: {
+        stage1_blocked: filteredOutSubjects,
+        stage2_rejected: triagedOutSubjects,
+        stage3_legs: allLegs,
+        stage4_stays: stays,
+      },
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

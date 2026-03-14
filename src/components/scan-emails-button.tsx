@@ -5,16 +5,27 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Mail, Loader2, CheckCircle2 } from "lucide-react";
 
+interface ScanDebug {
+  stage1_blocked: string[];
+  stage2_rejected: string[];
+  stage3_legs: unknown[];
+  stage4_stays: unknown[];
+}
+
 export function ScanEmailsButton({ taxYear }: { taxYear: number }) {
   const router = useRouter();
   const [scanning, setScanning] = useState(false);
   const [result, setResult] = useState<string | null>(null);
+  const [debug, setDebug] = useState<ScanDebug | null>(null);
+  const [showDebug, setShowDebug] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function handleScan() {
     setScanning(true);
     setError(null);
     setResult(null);
+    setDebug(null);
+    setShowDebug(false);
 
     try {
       const res = await fetch("/api/ingest/gmail", {
@@ -28,9 +39,8 @@ export function ScanEmailsButton({ taxYear }: { taxYear: number }) {
       if (!res.ok) {
         setError(data.error || `Scan failed (${res.status})`);
       } else {
-        setResult(
-          `Found ${data.total_found} emails, created ${data.trips_created} trips`
-        );
+        setResult(data.message || `Found ${data.total_found} emails, created ${data.trips_created} trips`);
+        if (data.debug) setDebug(data.debug);
         router.refresh();
       }
     } catch (err) {
@@ -59,7 +69,43 @@ export function ScanEmailsButton({ taxYear }: { taxYear: number }) {
         {scanning ? "Scanning..." : "Scan Emails"}
       </Button>
       {result && (
-        <p className="text-xs text-green-600 dark:text-green-400">{result}</p>
+        <div className="space-y-1">
+          <p className="text-xs text-green-600 dark:text-green-400">{result}</p>
+          {debug && (
+            <button
+              onClick={() => setShowDebug(!showDebug)}
+              className="text-xs text-muted-foreground underline"
+            >
+              {showDebug ? "Hide" : "Show"} pipeline details
+            </button>
+          )}
+        </div>
+      )}
+      {showDebug && debug && (
+        <div className="max-h-60 overflow-y-auto rounded border border-border bg-muted/50 p-2 text-xs space-y-2">
+          {debug.stage1_blocked.length > 0 && (
+            <div>
+              <p className="font-medium">Blocked by subject filter ({debug.stage1_blocked.length}):</p>
+              {debug.stage1_blocked.map((s, i) => (
+                <p key={i} className="text-muted-foreground truncate">• {s}</p>
+              ))}
+            </div>
+          )}
+          {debug.stage2_rejected.length > 0 && (
+            <div>
+              <p className="font-medium">Rejected by AI triage ({debug.stage2_rejected.length}):</p>
+              {debug.stage2_rejected.map((s, i) => (
+                <p key={i} className="text-muted-foreground truncate">• {s}</p>
+              ))}
+            </div>
+          )}
+          <div>
+            <p className="font-medium">Legs extracted: {debug.stage3_legs.length}</p>
+          </div>
+          <div>
+            <p className="font-medium">Stays assembled: {debug.stage4_stays.length}</p>
+          </div>
+        </div>
       )}
       {error && <p className="text-xs text-destructive">{error}</p>}
     </div>
