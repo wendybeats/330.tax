@@ -349,8 +349,7 @@ export async function POST(request: NextRequest) {
       .from("trips")
       .delete()
       .eq("user_id", user.id)
-      .eq("tax_year", tax_year)
-      .like("notes", "Gmail%");
+      .eq("tax_year", tax_year);
     await supabase
       .from("raw_sources")
       .delete()
@@ -544,7 +543,7 @@ export async function POST(request: NextRequest) {
 
         const msgData: GmailMessageDetail = await msgResponse.json();
         const rawBody = extractEmailBody(msgData);
-        const body = stripHtml(rawBody).slice(0, 2000);
+        const body = stripHtml(rawBody).slice(0, 4000);
 
         return { id: meta.id, subject: meta.subject, snippet: meta.snippet, body };
       } catch {
@@ -581,7 +580,7 @@ export async function POST(request: NextRequest) {
       const emailBlock = batch
         .map(
           (e, i) =>
-            `[Email ${i + 1}] Subject: ${e.subject}\n${e.body.slice(0, 500)}`
+            `[Email ${i + 1}] Subject: ${e.subject}\n${e.body.slice(0, 1000)}`
         )
         .join("\n\n");
 
