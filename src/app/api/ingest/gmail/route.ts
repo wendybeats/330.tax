@@ -7,26 +7,61 @@ import { calculateFullDays } from "@/lib/trips";
 export const maxDuration = 60;
 
 // ── Stage 0: Gmail search terms ──────────────────────────────────────
-const GMAIL_SEARCH_QUERY = [
+// Two strategies combined:
+// 1. Keyword phrases that appear in any booking confirmation
+// 2. Sender domains for known airlines/OTAs (high precision)
+const KEYWORD_QUERIES = [
   '"booking confirmation"',
   '"e-ticket"',
   '"itinerary"',
   '"reservation confirmed"',
-  '"your trip"',
   '"flight receipt"',
   '"train ticket"',
   '"bus ticket"',
   '"boarding pass"',
   '"check-in confirmation"',
   '"ticket confirmation"',
-  '"travel document"',
   '"your flight"',
   '"your booking"',
-  '"confirmation code"',
   '"booking reference"',
   '"PNR"',
   '"record locator"',
-].join(" OR ");
+  '"reservation number"',
+  '"booking number"',
+  '"your reservation"',
+  '"travel confirmation"',
+  '"order confirmation" flight',
+  '"trip confirmation"',
+];
+
+// Emails from these senders are almost certainly real bookings
+const SENDER_QUERIES = [
+  // Airlines
+  'from:airfrance', 'from:klm.com',
+  'from:turkishairlines', 'from:thy.com',
+  'from:flypgs.com', 'from:pegasusairlines',
+  'from:delta.com', 'from:united.com', 'from:aa.com',
+  'from:southwest.com', 'from:jetblue.com',
+  'from:british-airways', 'from:virginatlantic',
+  'from:easyjet.com', 'from:ryanair.com', 'from:vueling.com',
+  'from:wizzair.com', 'from:lot.com',
+  'from:lufthansa.com', 'from:swiss.com',
+  'from:emirates.com', 'from:qatarairways.com',
+  // OTAs
+  'from:kiwi.com',
+  'from:booking.com', 'from:airbnb.com',
+  'from:expedia.com', 'from:hotels.com',
+  'from:kayak.com', 'from:skyscanner.com',
+  'from:omio.com', 'from:trainline.com',
+  'from:flixbus.com',
+  'from:justfly.com subject:confirmation',
+  'from:flighthub subject:confirmation',
+  // Hotel chains
+  'from:marriott.com', 'from:hilton.com', 'from:ihg.com',
+  'from:hyatt.com', 'from:accor.com',
+];
+
+const GMAIL_SEARCH_QUERY = [...KEYWORD_QUERIES, ...SENDER_QUERIES].join(" OR ");
 
 // ── Stage 1: Subject blocklist (zero cost) ───────────────────────────
 const SUBJECT_BLOCKLIST = [
