@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { Mail, Loader2, CheckCircle2 } from "lucide-react";
+import { Mail, Loader2, CheckCircle2, RefreshCw } from "lucide-react";
 
 interface ScanDebug {
   stage1_blocked: string[];
@@ -20,7 +20,7 @@ export function ScanEmailsButton({ taxYear }: { taxYear: number }) {
   const [showDebug, setShowDebug] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function handleScan() {
+  async function handleScan(force = false) {
     setScanning(true);
     setError(null);
     setResult(null);
@@ -31,7 +31,7 @@ export function ScanEmailsButton({ taxYear }: { taxYear: number }) {
       const res = await fetch("/api/ingest/gmail", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tax_year: taxYear }),
+        body: JSON.stringify({ tax_year: taxYear, force }),
       });
 
       const data = await res.json();
@@ -56,7 +56,7 @@ export function ScanEmailsButton({ taxYear }: { taxYear: number }) {
         variant="outline"
         size="lg"
         className="w-full justify-start gap-2"
-        onClick={handleScan}
+        onClick={() => handleScan(false)}
         disabled={scanning}
       >
         {scanning ? (
@@ -67,6 +67,16 @@ export function ScanEmailsButton({ taxYear }: { taxYear: number }) {
           <Mail className="size-4" />
         )}
         {scanning ? "Scanning..." : "Scan Emails"}
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="w-full justify-start gap-2 text-muted-foreground"
+        onClick={() => handleScan(true)}
+        disabled={scanning}
+      >
+        <RefreshCw className="size-3" />
+        Re-scan All Emails
       </Button>
       {result && (
         <div className="space-y-1">

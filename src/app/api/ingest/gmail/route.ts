@@ -42,7 +42,7 @@ const SENDER_QUERIES = [
   'from:flypgs.com', 'from:pegasusairlines',
   'from:delta.com', 'from:united.com', 'from:aa.com',
   'from:southwest.com', 'from:jetblue.com',
-  'from:british-airways', 'from:virginatlantic',
+  'from:british-airways', 'from:virginatlantic', 'from:"virgin atlantic"',
   'from:easyjet.com', 'from:ryanair.com', 'from:vueling.com',
   'from:wizzair.com', 'from:lot.com',
   'from:lufthansa.com', 'from:swiss.com',
@@ -105,40 +105,41 @@ IMPORTANT:
 - A connecting itinerary A->B->C has 2 legs. Extract each segment.
 - Check-in confirmations and boarding passes contain booking data — extract it.
 - Look for return dates even if they appear far down in the email body.
+- Extract passenger_names as an array of strings. If the email mentions specific passenger names (e.g., "Passenger: John Smith", "Traveler: SMITH/JOHN MR"), list them. If no names are mentioned, return an empty array [].
 
 EXAMPLES:
 
 --- EXAMPLE: Multi-leg connection (same-day, same booking ref) ---
 Email: "Your booking 2GUNQF is confirmed. Air France AF1053, Tbilisi (TBS) to Paris CDG, Apr 7 2025, depart 02:30, arrive 06:30. Connecting: Air France AF1492, Paris CDG to Valencia (VLC), Apr 7 2025, depart 10:20, arrive 12:25."
 Output: {"leg_count": 2, "legs": [
-  {"email_index": 1, "type": "flight", "operator": "Air France", "service_number": "AF1053", "origin_city": "Tbilisi", "origin_country": "Georgia", "destination_city": "Paris", "destination_country": "France", "departure_date": "2025-04-07", "arrival_date": "2025-04-07", "booking_reference": "2GUNQF"},
-  {"email_index": 1, "type": "flight", "operator": "Air France", "service_number": "AF1492", "origin_city": "Paris", "origin_country": "France", "destination_city": "Valencia", "destination_country": "Spain", "departure_date": "2025-04-07", "arrival_date": "2025-04-07", "booking_reference": "2GUNQF"}
+  {"email_index": 1, "type": "flight", "operator": "Air France", "service_number": "AF1053", "origin_city": "Tbilisi", "origin_country": "Georgia", "destination_city": "Paris", "destination_country": "France", "departure_date": "2025-04-07", "arrival_date": "2025-04-07", "booking_reference": "2GUNQF", "passenger_names": []},
+  {"email_index": 1, "type": "flight", "operator": "Air France", "service_number": "AF1492", "origin_city": "Paris", "origin_country": "France", "destination_city": "Valencia", "destination_country": "Spain", "departure_date": "2025-04-07", "arrival_date": "2025-04-07", "booking_reference": "2GUNQF", "passenger_names": []}
 ]}
 
 --- EXAMPLE: Round-trip (Kiwi.com style) ---
 Email: "Booking 593629113 confirmed. Outbound: Air Montenegro 4O401, Istanbul (IST) to Tivat (TIV), Jan 13 2025. Return: Air Montenegro 4O400, Tivat to Istanbul, Jan 19 2025."
 Output: {"leg_count": 2, "legs": [
-  {"email_index": 1, "type": "flight", "operator": "Air Montenegro", "service_number": "4O401", "origin_city": "Istanbul", "origin_country": "Turkey", "destination_city": "Tivat", "destination_country": "Montenegro", "departure_date": "2025-01-13", "arrival_date": "2025-01-13", "booking_reference": "593629113"},
-  {"email_index": 1, "type": "flight", "operator": "Air Montenegro", "service_number": "4O400", "origin_city": "Tivat", "origin_country": "Montenegro", "destination_city": "Istanbul", "destination_country": "Turkey", "departure_date": "2025-01-19", "arrival_date": "2025-01-19", "booking_reference": "593629113"}
+  {"email_index": 1, "type": "flight", "operator": "Air Montenegro", "service_number": "4O401", "origin_city": "Istanbul", "origin_country": "Turkey", "destination_city": "Tivat", "destination_country": "Montenegro", "departure_date": "2025-01-13", "arrival_date": "2025-01-13", "booking_reference": "593629113", "passenger_names": []},
+  {"email_index": 1, "type": "flight", "operator": "Air Montenegro", "service_number": "4O400", "origin_city": "Tivat", "origin_country": "Montenegro", "destination_city": "Istanbul", "destination_country": "Turkey", "departure_date": "2025-01-19", "arrival_date": "2025-01-19", "booking_reference": "593629113", "passenger_names": []}
 ]}
 
 --- EXAMPLE: Overnight flight ---
 Email: "Avianca AV 16, Medellin (MDE) to Madrid (MAD), Jan 1 2025, depart 18:05. Arrives Jan 2 at 10:30. Connecting: AV 6612, Madrid to Istanbul, Jan 2 2025, depart 14:25, arrive 19:55."
 Output: {"leg_count": 2, "legs": [
-  {"email_index": 1, "type": "flight", "operator": "Avianca", "service_number": "AV 16", "origin_city": "Medellin", "origin_country": "Colombia", "destination_city": "Madrid", "destination_country": "Spain", "departure_date": "2025-01-01", "arrival_date": "2025-01-02", "booking_reference": ""},
-  {"email_index": 1, "type": "flight", "operator": "Avianca", "service_number": "AV 6612", "origin_city": "Madrid", "origin_country": "Spain", "destination_city": "Istanbul", "destination_country": "Turkey", "departure_date": "2025-01-02", "arrival_date": "2025-01-02", "booking_reference": ""}
+  {"email_index": 1, "type": "flight", "operator": "Avianca", "service_number": "AV 16", "origin_city": "Medellin", "origin_country": "Colombia", "destination_city": "Madrid", "destination_country": "Spain", "departure_date": "2025-01-01", "arrival_date": "2025-01-02", "booking_reference": "", "passenger_names": []},
+  {"email_index": 1, "type": "flight", "operator": "Avianca", "service_number": "AV 6612", "origin_city": "Madrid", "origin_country": "Spain", "destination_city": "Istanbul", "destination_country": "Turkey", "departure_date": "2025-01-02", "arrival_date": "2025-01-02", "booking_reference": "", "passenger_names": []}
 ]}
 
 --- EXAMPLE: Bus booking ---
 Email: "Reservation 10207767 confirmed. Yerevan to Tbilisi, Feb 18 2025, Departure: 13:00, Arrival: 19:00."
 Output: {"leg_count": 1, "legs": [
-  {"email_index": 1, "type": "bus", "operator": "", "service_number": "", "origin_city": "Yerevan", "origin_country": "Armenia", "destination_city": "Tbilisi", "destination_country": "Georgia", "departure_date": "2025-02-18", "arrival_date": "2025-02-18", "booking_reference": "10207767"}
+  {"email_index": 1, "type": "bus", "operator": "", "service_number": "", "origin_city": "Yerevan", "origin_country": "Armenia", "destination_city": "Tbilisi", "destination_country": "Georgia", "departure_date": "2025-02-18", "arrival_date": "2025-02-18", "booking_reference": "10207767", "passenger_names": []}
 ]}
 
 NOW EXTRACT FROM THESE EMAILS. Return ONLY valid JSON with "leg_count" and "legs" array. If no transport booking is found in an email, do not create legs for it.`;
 
 // ── Stage 4: Sonnet assembly prompt (template) ───────────────────────
-function buildAssemblyPrompt(taxHomeCountry: string, taxYear: number, legCount: number) {
+function buildAssemblyPrompt(taxHomeCountry: string, taxYear: number, legCount: number, userName: string) {
   return `You are building a country-by-country travel timeline for the IRS Physical Presence Test (Form 2555).
 
 The user's tax home is: ${taxHomeCountry}
@@ -170,6 +171,8 @@ RULES:
    - LOW = entirely inferred (no direct transport evidence)
 
 9. START AND END OF YEAR. If the first leg of the year departs from a non-tax-home city, create a stay for that country from Jan 1 (or tax year start) with confidence MEDIUM. Similarly, if the last leg arrives somewhere, create a stay through Dec 31 with confidence MEDIUM.
+
+10. PASSENGER FILTERING. The user's name is: ${userName}. If a leg has passenger_names listed AND the user's name does not appear in that list (compare first name OR last name, case-insensitive), EXCLUDE that leg from the timeline and note it in warnings as "Excluded leg X: booked for [names], not ${userName}". If passenger_names is empty or unknown, assume the user is the passenger.
 
 Return ONLY valid JSON with:
 - "stays": array of country stays, each with country, date_arrived, date_departed, confidence, notes
@@ -221,6 +224,7 @@ interface ExtractedLeg {
   departure_date: string;
   arrival_date: string;
   booking_reference: string;
+  passenger_names: string[];
 }
 
 interface AssembledStay {
@@ -313,7 +317,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { tax_year } = await request.json();
+  const { tax_year, force } = await request.json();
 
   if (!tax_year) {
     return NextResponse.json(
@@ -331,6 +335,28 @@ export async function POST(request: NextRequest) {
     .maybeSingle();
 
   const taxHomeCountry = taxProfile?.tax_home_country || "Georgia";
+
+  // Get user's name for passenger filtering (Google OAuth provides full_name)
+  const userName =
+    (user.user_metadata?.full_name as string) ||
+    (user.user_metadata?.name as string) ||
+    user.email?.split("@")[0] ||
+    "";
+
+  // If force=true, clear previous scan data so we reprocess all emails
+  if (force) {
+    await supabase
+      .from("trips")
+      .delete()
+      .eq("user_id", user.id)
+      .eq("tax_year", tax_year)
+      .like("notes", "Gmail%");
+    await supabase
+      .from("raw_sources")
+      .delete()
+      .eq("user_id", user.id)
+      .eq("source_type", "gmail");
+  }
 
   // Get Google access token
   const {
@@ -696,7 +722,7 @@ export async function POST(request: NextRequest) {
     const legsBlock = allLegs
       .map(
         (leg, i) =>
-          `[Leg ${i}] ${leg.departure_date} ${leg.origin_city} (${leg.origin_country}) → ${leg.destination_city} (${leg.destination_country}) | ${leg.type} ${leg.operator} ${leg.service_number} | ref: ${leg.booking_reference}`
+          `[Leg ${i}] ${leg.departure_date} ${leg.origin_city} (${leg.origin_country}) → ${leg.destination_city} (${leg.destination_country}) | ${leg.type} ${leg.operator} ${leg.service_number} | ref: ${leg.booking_reference} | passengers: ${(leg.passenger_names || []).join(", ") || "unknown"}`
       )
       .join("\n");
 
@@ -709,7 +735,7 @@ export async function POST(request: NextRequest) {
         messages: [
           {
             role: "user",
-            content: `${buildAssemblyPrompt(taxHomeCountry, tax_year, allLegs.length)}\n\nHere are ${allLegs.length} legs to assemble:\n\n${legsBlock}`,
+            content: `${buildAssemblyPrompt(taxHomeCountry, tax_year, allLegs.length, userName)}\n\nHere are ${allLegs.length} legs to assemble:\n\n${legsBlock}`,
           },
         ],
       });
