@@ -326,8 +326,8 @@ export async function POST(request: NextRequest) {
     // ═══════════════════════════════════════════════════════════════════
     const afterDate = `${tax_year - 1}/09/01`;
     const beforeDate = `${tax_year + 1}/01/31`;
-    const query = `(${GMAIL_SEARCH_QUERY}) after:${afterDate} before:${beforeDate} -category:promotions -category:social`;
-    const searchUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=50`;
+    const query = `(${GMAIL_SEARCH_QUERY}) after:${afterDate} before:${beforeDate}`;
+    const searchUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=100`;
 
     const searchResponse = await fetch(searchUrl, {
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -388,12 +388,72 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Fetch email bodies in parallel
+    // ═══════════════════════════════════════════════════════════════════
+    // STAGE 1: Fetch metadata + pre-filter (zero AI cost)
+    // Fetch lightweight metadata first, apply blocklist, then fetch
+    // full bodies only for emails that pass the filter
+    // ═══════════════════════════════════════════════════════════════════
+
+    // Fetch metadata (subject + snippet) for all emails — lightweight
+    const metadataPromises = newMessages.slice(0, 100).map(async (msg) => {
+      try {
+        const msgUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From`;
+        const msgResponse = await fetch(msgUrl, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        if (!msgResponse.ok) return null;
+
+        const msgData = await msgResponse.json();
+        const subject =
+          msgData.payload?.headers?.find(
+            (h: { name: string; value: string }) => h.name.toLowerCase() === "subject"
+          )?.value || "";
+        const from =
+          msgData.payload?.headers?.find(
+            (h: { name: string; value: string }) => h.name.toLowerCase() === "from"
+          )?.value || "";
+
+        return { id: msg.id, subject, from, snippet: msgData.snippet || "" };
+      } catch {
+        return null;
+      }
+    });
+
+    const metadataResults = await Promise.all(metadataPromises);
+    const allMetadata = metadataResults.filter((r): r is NonNullable<typeof r> => r !== null);
+
+    // Apply subject blocklist
+    const filtered = allMetadata.filter((email) => {
+      const subjectLower = email.subject.toLowerCase();
+      return !SUBJECT_BLOCKLIST.some((term) => subjectLower.includes(term));
+    });
+
+    if (filtered.length === 0) {
+      // Store raw_sources so we don't re-fetch
+      await supabase.from("raw_sources").insert(
+        allMetadata.map((email) => ({
+          user_id: user.id,
+          source_type: "gmail",
+          gmail_message_id: email.id,
+          raw_content: `Subject: ${email.subject}`,
+          parsed_at: new Date().toISOString(),
+        }))
+      );
+      return NextResponse.json({
+        message: "All emails were filtered as non-booking content",
+        total_found: messages.length,
+        new_processed: allMetadata.length,
+        successfully_parsed: 0,
+        trips_created: 0,
+      });
+    }
+
+    // Now fetch full bodies only for filtered emails (saves time + bandwidth)
     const emailSummaries: EmailSummary[] = [];
 
-    const fetchPromises = newMessages.slice(0, 50).map(async (msg) => {
+    const fetchPromises = filtered.slice(0, 60).map(async (meta) => {
       try {
-        const msgUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=full`;
+        const msgUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${meta.id}?format=full`;
         const msgResponse = await fetch(msgUrl, {
           headers: { Authorization: `Bearer ${accessToken}` },
         });
@@ -402,19 +462,15 @@ export async function POST(request: NextRequest) {
         const msgData: GmailMessageDetail = await msgResponse.json();
         const rawBody = extractEmailBody(msgData);
         const body = stripHtml(rawBody).slice(0, 2000);
-        const subject =
-          msgData.payload.headers.find(
-            (h) => h.name.toLowerCase() === "subject"
-          )?.value || "";
 
-        return { id: msg.id, subject, snippet: msgData.snippet, body };
+        return { id: meta.id, subject: meta.subject, snippet: meta.snippet, body };
       } catch {
         return null;
       }
     });
 
-    const results = await Promise.all(fetchPromises);
-    for (const r of results) {
+    const bodyResults = await Promise.all(fetchPromises);
+    for (const r of bodyResults) {
       if (r) emailSummaries.push(r);
     }
 
@@ -428,42 +484,14 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // STAGE 1: Pre-filter (zero cost)
-    // Drop obvious promos by subject line before any AI call
-    // ═══════════════════════════════════════════════════════════════════
-    const filtered = emailSummaries.filter((email) => {
-      const subjectLower = email.subject.toLowerCase();
-      return !SUBJECT_BLOCKLIST.some((term) => subjectLower.includes(term));
-    });
-
-    if (filtered.length === 0) {
-      // Store raw_sources so we don't re-fetch these
-      await supabase.from("raw_sources").insert(
-        emailSummaries.map((email) => ({
-          user_id: user.id,
-          source_type: "gmail",
-          gmail_message_id: email.id,
-          raw_content: `Subject: ${email.subject}\n\n${email.body}`.slice(0, 50000),
-          parsed_at: new Date().toISOString(),
-        }))
-      );
-      return NextResponse.json({
-        message: "All emails were filtered as non-booking content",
-        total_found: messages.length,
-        new_processed: emailSummaries.length,
-        successfully_parsed: 0,
-        trips_created: 0,
-      });
-    }
 
     // ═══════════════════════════════════════════════════════════════════
     // STAGE 2: Haiku Triage (~$0.01)
-    // Cheap classification: is this a real booking or junk?
-    // Batched 12 emails per call, run in parallel
+    // Cheap classification using subject + snippet (no full body needed)
+    // Batched 15 per call, run in parallel
     // ═══════════════════════════════════════════════════════════════════
-    const TRIAGE_BATCH_SIZE = 12;
-    const triageBatches = chunkArray(filtered, TRIAGE_BATCH_SIZE);
+    const TRIAGE_BATCH_SIZE = 15;
+    const triageBatches = chunkArray(emailSummaries, TRIAGE_BATCH_SIZE);
     const bookingEmails: EmailSummary[] = [];
 
     const triagePromises = triageBatches.map(async (batch) => {
@@ -502,7 +530,7 @@ export async function POST(request: NextRequest) {
         }
         return confirmed;
       } catch {
-        // On triage failure, pass all emails through (false positives > false negatives)
+        // On triage failure, pass all emails through
         return batch;
       }
     });
@@ -513,20 +541,31 @@ export async function POST(request: NextRequest) {
     }
 
     if (bookingEmails.length === 0) {
-      // Store raw_sources for all fetched emails
-      await supabase.from("raw_sources").insert(
-        emailSummaries.map((email) => ({
+      // Store all raw_sources
+      const allEmailIds = new Set(emailSummaries.map((e) => e.id));
+      const blockedOnly = allMetadata.filter((e) => !allEmailIds.has(e.id));
+      const rawRows = [
+        ...emailSummaries.map((e) => ({
           user_id: user.id,
-          source_type: "gmail",
-          gmail_message_id: email.id,
-          raw_content: `Subject: ${email.subject}\n\n${email.body}`.slice(0, 50000),
+          source_type: "gmail" as const,
+          gmail_message_id: e.id,
+          raw_content: `Subject: ${e.subject}\n\n${e.body}`.slice(0, 50000),
           parsed_at: new Date().toISOString(),
-        }))
-      );
+        })),
+        ...blockedOnly.map((e) => ({
+          user_id: user.id,
+          source_type: "gmail" as const,
+          gmail_message_id: e.id,
+          raw_content: `Subject: ${e.subject} [BLOCKED]`,
+          parsed_at: new Date().toISOString(),
+        })),
+      ];
+      if (rawRows.length > 0) await supabase.from("raw_sources").insert(rawRows);
+
       return NextResponse.json({
         message: "No booking confirmations found in emails",
         total_found: messages.length,
-        new_processed: emailSummaries.length,
+        new_processed: allMetadata.length,
         successfully_parsed: 0,
         trips_created: 0,
       });
@@ -639,16 +678,31 @@ export async function POST(request: NextRequest) {
     // Database writes
     // ═══════════════════════════════════════════════════════════════════
 
-    // Store raw_sources in a single batch insert
-    await supabase.from("raw_sources").insert(
-      emailSummaries.map((email) => ({
+    // Store raw_sources for ALL fetched emails (including blocked ones)
+    // so they don't get re-fetched on subsequent scans
+    const allEmailIds = new Set(emailSummaries.map((e) => e.id));
+    const blockedEmails = allMetadata.filter((e) => !allEmailIds.has(e.id));
+
+    const rawSourceRows = [
+      ...emailSummaries.map((email) => ({
         user_id: user.id,
-        source_type: "gmail",
+        source_type: "gmail" as const,
         gmail_message_id: email.id,
         raw_content: `Subject: ${email.subject}\n\n${email.body}`.slice(0, 50000),
         parsed_at: new Date().toISOString(),
-      }))
-    );
+      })),
+      ...blockedEmails.map((email) => ({
+        user_id: user.id,
+        source_type: "gmail" as const,
+        gmail_message_id: email.id,
+        raw_content: `Subject: ${email.subject} [BLOCKED BY FILTER]`,
+        parsed_at: new Date().toISOString(),
+      })),
+    ];
+
+    if (rawSourceRows.length > 0) {
+      await supabase.from("raw_sources").insert(rawSourceRows);
+    }
 
     // Create trip records from assembled stays in a single batch
     const tripRows = stays
@@ -688,15 +742,17 @@ export async function POST(request: NextRequest) {
     }
 
     // Collect subjects that were filtered out at each stage for debugging
-    const filteredOutSubjects = emailSummaries
-      .filter((e) => !filtered.includes(e))
+    const filteredIds = new Set(filtered.map((e) => e.id));
+    const filteredOutSubjects = allMetadata
+      .filter((e) => !filteredIds.has(e.id))
       .map((e) => e.subject);
-    const triagedOutSubjects = filtered
-      .filter((e) => !bookingEmails.includes(e))
+    const bookingIds = new Set(bookingEmails.map((e) => e.id));
+    const triagedOutSubjects = emailSummaries
+      .filter((e) => !bookingIds.has(e.id))
       .map((e) => e.subject);
 
     return NextResponse.json({
-      message: `Scanned ${emailSummaries.length} emails → ${filtered.length} passed filter → ${bookingEmails.length} confirmed bookings → ${allLegs.length} legs extracted → ${stays.length} stays assembled → ${tripsCreated} trips created`,
+      message: `Found ${allMetadata.length} emails → ${filtered.length} passed filter → ${emailSummaries.length} fetched → ${bookingEmails.length} confirmed bookings → ${allLegs.length} legs → ${stays.length} stays → ${tripsCreated} trips`,
       total_found: messages.length,
       new_processed: emailSummaries.length,
       successfully_parsed: stays.length,
