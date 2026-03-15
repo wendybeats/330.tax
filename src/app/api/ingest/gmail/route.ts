@@ -93,67 +93,89 @@ OTHER = promotional email, deal/sale alert, newsletter, loyalty program update, 
 
 Return ONLY a JSON array like: [{"email": 1, "label": "BOOKING"}, {"email": 2, "label": "OTHER"}]`;
 
-// ── Stage 3: Sonnet extraction prompt ────────────────────────────────
-const EXTRACTION_PROMPT = `Extract individual transport LEGS from these booking confirmation emails.
+// ── Stage 3: Sonnet extraction prompt (with few-shot examples) ───────
+const EXTRACTION_PROMPT = `You are extracting transport bookings from emails.
 
-A LEG is a single one-way segment of transport. A round-trip flight has 2 legs. A multi-city itinerary A→B→C has 2 legs.
+For each email, follow these steps:
+STEP 1: Scan the entire email and count how many separate transport segments are mentioned (including outbound flights, return flights, connections, trains, buses). State the count.
+STEP 2: Extract each one as a LEG. A leg is a single one-way segment.
 
-Return ONLY valid JSON:
-{
-  "legs": [
-    {
-      "email_index": 1,
-      "type": "flight | train | bus | ferry",
-      "operator": "airline/operator name",
-      "service_number": "flight/train number or empty string",
-      "origin_city": "city name",
-      "origin_country": "full country name",
-      "destination_city": "city name",
-      "destination_country": "full country name",
-      "departure_date": "YYYY-MM-DD",
-      "arrival_date": "YYYY-MM-DD",
-      "booking_reference": "PNR/confirmation code or empty string"
-    }
-  ]
-}
+IMPORTANT:
+- A round-trip booking has AT LEAST 2 legs (outbound + return). Look for both.
+- A connecting itinerary A->B->C has 2 legs. Extract each segment.
+- Check-in confirmations and boarding passes contain booking data — extract it.
+- Look for return dates even if they appear far down in the email body.
 
-Rules:
-- Extract EVERY leg, including return flights and connections
-- A round trip has TWO legs (outbound + return) — list both
-- Use full country names (e.g., "United States", "Turkey", "United Kingdom")
-- If no actual booking data is found in an email, do not create legs for it
-- Departure and arrival dates may differ for overnight flights/trains`;
+EXAMPLES:
+
+--- EXAMPLE: Multi-leg connection (same-day, same booking ref) ---
+Email: "Your booking 2GUNQF is confirmed. Air France AF1053, Tbilisi (TBS) to Paris CDG, Apr 7 2025, depart 02:30, arrive 06:30. Connecting: Air France AF1492, Paris CDG to Valencia (VLC), Apr 7 2025, depart 10:20, arrive 12:25."
+Output: {"leg_count": 2, "legs": [
+  {"email_index": 1, "type": "flight", "operator": "Air France", "service_number": "AF1053", "origin_city": "Tbilisi", "origin_country": "Georgia", "destination_city": "Paris", "destination_country": "France", "departure_date": "2025-04-07", "arrival_date": "2025-04-07", "booking_reference": "2GUNQF"},
+  {"email_index": 1, "type": "flight", "operator": "Air France", "service_number": "AF1492", "origin_city": "Paris", "origin_country": "France", "destination_city": "Valencia", "destination_country": "Spain", "departure_date": "2025-04-07", "arrival_date": "2025-04-07", "booking_reference": "2GUNQF"}
+]}
+
+--- EXAMPLE: Round-trip (Kiwi.com style) ---
+Email: "Booking 593629113 confirmed. Outbound: Air Montenegro 4O401, Istanbul (IST) to Tivat (TIV), Jan 13 2025. Return: Air Montenegro 4O400, Tivat to Istanbul, Jan 19 2025."
+Output: {"leg_count": 2, "legs": [
+  {"email_index": 1, "type": "flight", "operator": "Air Montenegro", "service_number": "4O401", "origin_city": "Istanbul", "origin_country": "Turkey", "destination_city": "Tivat", "destination_country": "Montenegro", "departure_date": "2025-01-13", "arrival_date": "2025-01-13", "booking_reference": "593629113"},
+  {"email_index": 1, "type": "flight", "operator": "Air Montenegro", "service_number": "4O400", "origin_city": "Tivat", "origin_country": "Montenegro", "destination_city": "Istanbul", "destination_country": "Turkey", "departure_date": "2025-01-19", "arrival_date": "2025-01-19", "booking_reference": "593629113"}
+]}
+
+--- EXAMPLE: Overnight flight ---
+Email: "Avianca AV 16, Medellin (MDE) to Madrid (MAD), Jan 1 2025, depart 18:05. Arrives Jan 2 at 10:30. Connecting: AV 6612, Madrid to Istanbul, Jan 2 2025, depart 14:25, arrive 19:55."
+Output: {"leg_count": 2, "legs": [
+  {"email_index": 1, "type": "flight", "operator": "Avianca", "service_number": "AV 16", "origin_city": "Medellin", "origin_country": "Colombia", "destination_city": "Madrid", "destination_country": "Spain", "departure_date": "2025-01-01", "arrival_date": "2025-01-02", "booking_reference": ""},
+  {"email_index": 1, "type": "flight", "operator": "Avianca", "service_number": "AV 6612", "origin_city": "Madrid", "origin_country": "Spain", "destination_city": "Istanbul", "destination_country": "Turkey", "departure_date": "2025-01-02", "arrival_date": "2025-01-02", "booking_reference": ""}
+]}
+
+--- EXAMPLE: Bus booking ---
+Email: "Reservation 10207767 confirmed. Yerevan to Tbilisi, Feb 18 2025, Departure: 13:00, Arrival: 19:00."
+Output: {"leg_count": 1, "legs": [
+  {"email_index": 1, "type": "bus", "operator": "", "service_number": "", "origin_city": "Yerevan", "origin_country": "Armenia", "destination_city": "Tbilisi", "destination_country": "Georgia", "departure_date": "2025-02-18", "arrival_date": "2025-02-18", "booking_reference": "10207767"}
+]}
+
+NOW EXTRACT FROM THESE EMAILS. Return ONLY valid JSON with "leg_count" and "legs" array. If no transport booking is found in an email, do not create legs for it.`;
 
 // ── Stage 4: Sonnet assembly prompt (template) ───────────────────────
-function buildAssemblyPrompt(taxHomeCountry: string) {
-  return `You are an IRS Physical Presence Test travel timeline builder.
+function buildAssemblyPrompt(taxHomeCountry: string, taxYear: number, legCount: number) {
+  return `You are building a country-by-country travel timeline for the IRS Physical Presence Test (Form 2555).
 
-Given a list of transport LEGS and the user's tax home country, assemble them into COUNTRY STAYS.
+The user's tax home is: ${taxHomeCountry}
+Tax year: ${taxYear}
 
-Tax home country: ${taxHomeCountry}
+TOTAL LEGS PROVIDED: ${legCount}
 
-Rules:
-1. MERGE CONNECTIONS: If leg A arrives in Frankfurt at 14:00 and leg B departs Frankfurt the same day, Frankfurt is a transit point, NOT a separate stay. Only create a stay for the final destination.
-2. LINK OUTBOUND AND RETURN: If the user flies US→Turkey on Dec 13 and Turkey→US on Dec 27, that is ONE stay in Turkey from Dec 13 to Dec 27.
-3. TAX HOME ASSUMPTION: Between trips abroad, assume the user is in ${taxHomeCountry}. Do NOT create stays for ${taxHomeCountry} — only create stays for other countries.
-4. MULTI-COUNTRY TRIPS: If the user flies A→B, stays, then B→C, stays, then C→A, create separate stays for B and C. Use the next leg's departure date as the departure from the previous country.
-5. ONE-WAY LEGS with no return: If you only see an outbound leg with no matching return, set confidence to LOW and note it.
-6. WITHIN-COUNTRY TRAVEL: If consecutive legs stay within the same country (e.g., Istanbul→Izmir), do NOT create a separate stay. The user never left that country.
-7. Dates must be YYYY-MM-DD format.
-8. Do NOT calculate full_days — just provide accurate arrival and departure dates.
+Assemble these legs into a list of COUNTRY STAYS. Every day of the tax year must be accounted for — the user was always somewhere.
 
-Return ONLY valid JSON:
-{
-  "stays": [
-    {
-      "country": "full country name",
-      "date_arrived": "YYYY-MM-DD",
-      "date_departed": "YYYY-MM-DD",
-      "confidence": "HIGH" | "MEDIUM" | "LOW",
-      "notes": "how this stay was determined"
-    }
-  ]
-}`;
+RULES:
+
+1. EVERY LEG MUST BE USED. After assembly, verify that every leg is reflected in the timeline. If a leg doesn't fit, flag it in warnings — do not silently discard it.
+
+2. TAX HOME FILLS GAPS. If there is a gap between two trips (e.g., user arrives back from Armenia on Feb 18 and next departure is Apr 7), the user was at their tax home (${taxHomeCountry}) during that gap. Create a stay for it.
+
+3. INCLUDE TAX HOME STAYS. The form requires entries for EVERY country including the tax home. Create ${taxHomeCountry} entries for all periods the user was home.
+
+4. MERGE SAME-DAY CONNECTIONS. If leg A arrives in Paris at 06:30 and leg B departs Paris at 10:20 the same day, Paris is transit — NOT a separate stay. Attribute that day to the final destination.
+
+5. WITHIN-COUNTRY TRAVEL. Legs within the same country (e.g., Istanbul->Izmir, Paris->Marseille) do NOT create separate stays. The user never left that country.
+
+6. LINK BY BOOKING REFERENCE. Legs sharing the same booking_reference are parts of the same trip even if they were in different emails.
+
+7. CHRONOLOGICAL ORDER. Stays must be in date order with no overlaps.
+
+8. CONFIDENCE:
+   - HIGH = both arrival and departure supported by a transport leg
+   - MEDIUM = one end is supported, the other is inferred (e.g., tax home fill)
+   - LOW = entirely inferred (no direct transport evidence)
+
+9. START AND END OF YEAR. If the first leg of the year departs from a non-tax-home city, create a stay for that country from Jan 1 (or tax year start) with confidence MEDIUM. Similarly, if the last leg arrives somewhere, create a stay through Dec 31 with confidence MEDIUM.
+
+Return ONLY valid JSON with:
+- "stays": array of country stays, each with country, date_arrived, date_departed, confidence, notes
+- "legs_used": array of leg indices accounted for
+- "legs_unused": array of leg indices that didn't fit (should be empty ideally)
+- "warnings": array of strings describing any anomalies`;
 }
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -362,7 +384,7 @@ export async function POST(request: NextRequest) {
     const afterDate = `${tax_year - 1}/09/01`;
     const beforeDate = `${tax_year + 1}/01/31`;
     const query = `(${GMAIL_SEARCH_QUERY}) after:${afterDate} before:${beforeDate}`;
-    const searchUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=100`;
+    const searchUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=250`;
 
     const searchResponse = await fetch(searchUrl, {
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -430,7 +452,7 @@ export async function POST(request: NextRequest) {
     // ═══════════════════════════════════════════════════════════════════
 
     // Fetch metadata (subject + snippet) for all emails — lightweight
-    const metadataPromises = newMessages.slice(0, 100).map(async (msg) => {
+    const metadataPromises = newMessages.slice(0, 250).map(async (msg) => {
       try {
         const msgUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From`;
         const msgResponse = await fetch(msgUrl, {
@@ -486,7 +508,7 @@ export async function POST(request: NextRequest) {
     // Now fetch full bodies only for filtered emails (saves time + bandwidth)
     const emailSummaries: EmailSummary[] = [];
 
-    const fetchPromises = filtered.slice(0, 60).map(async (meta) => {
+    const fetchPromises = filtered.slice(0, 100).map(async (meta) => {
       try {
         const msgUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${meta.id}?format=full`;
         const msgResponse = await fetch(msgUrl, {
@@ -609,9 +631,9 @@ export async function POST(request: NextRequest) {
     // ═══════════════════════════════════════════════════════════════════
     // STAGE 3: Sonnet Extraction (~$0.10)
     // Extract individual transport LEGS from confirmed bookings
-    // Batched 4 emails per call, run in parallel
+    // Batched 2 emails per call, run in parallel
     // ═══════════════════════════════════════════════════════════════════
-    const EXTRACT_BATCH_SIZE = 4;
+    const EXTRACT_BATCH_SIZE = 2;
     const extractBatches = chunkArray(bookingEmails, EXTRACT_BATCH_SIZE);
     const allLegs: ExtractedLeg[] = [];
 
@@ -635,7 +657,7 @@ export async function POST(request: NextRequest) {
           ],
         });
 
-        const parsed = parseJsonFromAI(response) as { legs: ExtractedLeg[] };
+        const parsed = parseJsonFromAI(response) as { leg_count?: number; legs: ExtractedLeg[] };
         return parsed.legs || [];
       } catch {
         return [];
@@ -687,20 +709,28 @@ export async function POST(request: NextRequest) {
         messages: [
           {
             role: "user",
-            content: `${buildAssemblyPrompt(taxHomeCountry)}\n\nHere are ${allLegs.length} legs to assemble:\n\n${legsBlock}`,
+            content: `${buildAssemblyPrompt(taxHomeCountry, tax_year, allLegs.length)}\n\nHere are ${allLegs.length} legs to assemble:\n\n${legsBlock}`,
           },
         ],
       });
 
       const assemblyData = parseJsonFromAI(assemblyResponse) as {
         stays: AssembledStay[];
+        legs_used?: number[];
+        legs_unused?: number[];
+        warnings?: string[];
       };
       stays = assemblyData.stays || [];
+
+      if (assemblyData.legs_unused && assemblyData.legs_unused.length > 0) {
+        console.warn("Assembly: unused legs:", assemblyData.legs_unused);
+      }
+      if (assemblyData.warnings && assemblyData.warnings.length > 0) {
+        console.warn("Assembly warnings:", assemblyData.warnings);
+      }
     } catch {
       // Fallback: convert each leg into a simple stay
-      stays = allLegs
-        .filter((leg) => leg.destination_country.toUpperCase() !== taxHomeCountry.toUpperCase())
-        .map((leg) => ({
+      stays = allLegs.map((leg) => ({
           country: leg.destination_country,
           date_arrived: leg.arrival_date || leg.departure_date,
           date_departed: leg.arrival_date || leg.departure_date,
