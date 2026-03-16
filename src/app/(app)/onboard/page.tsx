@@ -21,6 +21,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Progress } from "@/components/ui/progress";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Calendar,
   ChevronLeft,
@@ -31,6 +32,7 @@ import {
   SkipForward,
   Loader2,
   CheckCircle2,
+  Search,
 } from "lucide-react";
 
 const TOTAL_STEPS = 5;
@@ -44,8 +46,11 @@ export default function OnboardPage() {
   const [qualifyingEnd, setQualifyingEnd] = useState("");
   const [saving, setSaving] = useState(false);
   const [scanning, setScanning] = useState(false);
-  const [scanResult, setScanResult] = useState<{ total_found: number; successfully_parsed: number; trips_created: number } | null>(null);
   const [scanError, setScanError] = useState<string | null>(null);
+  const [scanPhase, setScanPhase] = useState<"input" | "guided-results" | "full-scan">("input");
+  const [userHints, setUserHints] = useState("");
+  const [guidedResult, setGuidedResult] = useState<{ total_found: number; successfully_parsed: number; trips_created: number } | null>(null);
+  const [fullScanResult, setFullScanResult] = useState<{ total_found: number; successfully_parsed: number; trips_created: number } | null>(null);
 
   // Update qualifying period defaults when tax year changes
   function handleYearChange(year: number) {
@@ -64,10 +69,45 @@ export default function OnboardPage() {
     if (!qualifyingEnd) setQualifyingEnd(`${taxYear}-12-31`);
   }
 
-  async function handleScanGmail() {
+  async function handleGuidedScan() {
+    const hints = userHints
+      .split(",")
+      .map((h) => h.trim())
+      .filter(Boolean);
+
     setScanning(true);
     setScanError(null);
-    setScanResult(null);
+
+    try {
+      const res = await fetch("/api/ingest/gmail", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tax_year: taxYear, user_hints: hints, force: true }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setScanError(data.error || data.details || `Scan failed (${res.status})`);
+      } else {
+        const data = await res.json();
+        setGuidedResult({
+          total_found: data.total_found || 0,
+          successfully_parsed: data.successfully_parsed || 0,
+          trips_created: data.trips_created || 0,
+        });
+        setScanPhase("guided-results");
+      }
+    } catch (err) {
+      setScanError(`Connection error: ${err instanceof Error ? err.message : "Unknown error"}`);
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  async function handleFullScan() {
+    setScanning(true);
+    setScanError(null);
+    setScanPhase("full-scan");
 
     try {
       const res = await fetch("/api/ingest/gmail", {
@@ -81,7 +121,7 @@ export default function OnboardPage() {
         setScanError(data.error || data.details || `Scan failed (${res.status})`);
       } else {
         const data = await res.json();
-        setScanResult({
+        setFullScanResult({
           total_found: data.total_found || 0,
           successfully_parsed: data.successfully_parsed || 0,
           trips_created: data.trips_created || 0,
@@ -253,94 +293,199 @@ export default function OnboardPage() {
           </>
         )}
 
-        {/* Step 4: Gmail Scan */}
+        {/* Step 4: Gmail Scan — Multi-phase */}
         {step === 4 && (
           <>
-            <CardHeader className="text-center">
-              <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-full bg-primary/10">
-                <Mail className="size-6 text-primary" />
-              </div>
-              <CardTitle className="text-2xl">
-                {scanning ? "Scanning your emails..." : scanResult ? "Scan complete!" : "Ready to scan your emails?"}
-              </CardTitle>
-              <CardDescription>
-                {scanning
-                  ? "Searching Gmail for flight confirmations, hotel bookings, and travel receipts. This may take a minute."
-                  : scanResult
-                    ? `Found ${scanResult.total_found} travel emails and parsed ${scanResult.successfully_parsed} trips.`
-                    : "We\u2019ll search your Gmail for flight confirmations, hotel bookings, and other travel receipts to automatically build your travel timeline."}
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="flex flex-col items-center gap-4">
-              {scanning && (
-                <div className="flex flex-col items-center gap-3 py-4">
-                  <Loader2 className="size-8 animate-spin text-primary" />
-                  <p className="text-sm text-muted-foreground">
-                    Reading your inbox...
-                  </p>
-                </div>
-              )}
-
-              {scanError && (
-                <div className="w-full max-w-xs rounded-lg border border-destructive/50 bg-destructive/10 p-3 text-center text-sm text-destructive">
-                  {scanError}
-                </div>
-              )}
-
-              {scanResult && (
-                <div className="w-full max-w-xs space-y-2 rounded-lg border border-border p-4 text-sm">
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Emails found</span>
-                    <span className="font-medium">{scanResult.total_found}</span>
+            {/* Phase: input */}
+            {scanPhase === "input" && (
+              <>
+                <CardHeader className="text-center">
+                  <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-full bg-primary/10">
+                    <Mail className="size-6 text-primary" />
                   </div>
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Emails parsed</span>
-                    <span className="font-medium">{scanResult.successfully_parsed}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Trips created</span>
-                    <span className="font-medium">{scanResult.trips_created}</span>
-                  </div>
-                </div>
-              )}
-
-              {!scanning && !scanResult && (
-                <Button
-                  size="lg"
-                  className="w-full max-w-xs"
-                  onClick={handleScanGmail}
-                >
-                  <Mail className="size-4" />
-                  Scan My Gmail
-                </Button>
-              )}
-
-              {!scanning && (
-                <Button
-                  variant="ghost"
-                  className="w-full max-w-xs"
-                  onClick={() => setStep(5)}
-                >
-                  {scanResult ? (
-                    <>
-                      <ChevronRight className="size-4" />
-                      Continue
-                    </>
+                  <CardTitle className="text-2xl">
+                    {scanning ? "Searching your emails..." : "What trips do you remember?"}
+                  </CardTitle>
+                  <CardDescription>
+                    {scanning
+                      ? "Looking for booking confirmations matching your destinations..."
+                      : `List the cities or countries you traveled to in ${taxYear}. We\u2019ll search your Gmail for matching bookings.`}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="flex flex-col items-center gap-4">
+                  {scanning ? (
+                    <div className="flex flex-col items-center gap-3 py-4">
+                      <Loader2 className="size-8 animate-spin text-primary" />
+                      <p className="text-sm text-muted-foreground">
+                        Reading your inbox...
+                      </p>
+                    </div>
                   ) : (
                     <>
-                      <SkipForward className="size-4" />
-                      Skip for Now
+                      <div className="w-full max-w-xs space-y-2">
+                        <Textarea
+                          placeholder="e.g. Istanbul, Paris, Tbilisi, Montenegro"
+                          value={userHints}
+                          onChange={(e) => setUserHints(e.target.value)}
+                          rows={3}
+                        />
+                      </div>
+                      <Button
+                        size="lg"
+                        className="w-full max-w-xs"
+                        onClick={handleGuidedScan}
+                        disabled={!userHints.trim()}
+                      >
+                        <Search className="size-4" />
+                        Search My Emails
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        className="w-full max-w-xs"
+                        onClick={() => handleFullScan()}
+                      >
+                        <SkipForward className="size-4" />
+                        Skip — search everything instead
+                      </Button>
+                      <p className="text-center text-xs text-muted-foreground">
+                        Read-only access. We never send, modify, or delete your emails.
+                      </p>
                     </>
                   )}
-                </Button>
-              )}
 
-              {!scanning && !scanResult && (
-                <p className="text-center text-xs text-muted-foreground">
-                  Read-only access. We never send, modify, or delete your emails.
-                </p>
-              )}
-            </CardContent>
+                  {scanError && (
+                    <div className="w-full max-w-xs rounded-lg border border-destructive/50 bg-destructive/10 p-3 text-center text-sm text-destructive">
+                      {scanError}
+                    </div>
+                  )}
+                </CardContent>
+              </>
+            )}
+
+            {/* Phase: guided-results */}
+            {scanPhase === "guided-results" && (
+              <>
+                <CardHeader className="text-center">
+                  <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-full bg-green-500/10">
+                    <CheckCircle2 className="size-6 text-green-600 dark:text-green-400" />
+                  </div>
+                  <CardTitle className="text-2xl">
+                    {guidedResult && guidedResult.trips_created > 0
+                      ? `Found ${guidedResult.trips_created} trip${guidedResult.trips_created === 1 ? "" : "s"} from your emails!`
+                      : "No trips found for those destinations"}
+                  </CardTitle>
+                  <CardDescription>
+                    {guidedResult && guidedResult.trips_created > 0
+                      ? "Want to search for more trips you might have missed?"
+                      : "Try a broader search to find all your travel bookings."}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="flex flex-col items-center gap-4">
+                  {guidedResult && (
+                    <div className="w-full max-w-xs space-y-2 rounded-lg border border-border p-4 text-sm">
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Emails found</span>
+                        <span className="font-medium">{guidedResult.total_found}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Trips created</span>
+                        <span className="font-medium">{guidedResult.trips_created}</span>
+                      </div>
+                    </div>
+                  )}
+
+                  <Button
+                    size="lg"
+                    className="w-full max-w-xs"
+                    onClick={handleFullScan}
+                  >
+                    <Search className="size-4" />
+                    Search for More
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    className="w-full max-w-xs"
+                    onClick={() => setStep(5)}
+                  >
+                    <ChevronRight className="size-4" />
+                    Continue
+                  </Button>
+                </CardContent>
+              </>
+            )}
+
+            {/* Phase: full-scan */}
+            {scanPhase === "full-scan" && (
+              <>
+                <CardHeader className="text-center">
+                  <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-full bg-primary/10">
+                    <Mail className="size-6 text-primary" />
+                  </div>
+                  <CardTitle className="text-2xl">
+                    {scanning ? "Scanning all your emails..." : "Full scan complete!"}
+                  </CardTitle>
+                  <CardDescription>
+                    {scanning
+                      ? "Searching Gmail for all flight confirmations, hotel bookings, and travel receipts. This may take a minute."
+                      : fullScanResult
+                        ? `Found ${(fullScanResult.trips_created || 0) + (guidedResult?.trips_created || 0)} total trip${((fullScanResult.trips_created || 0) + (guidedResult?.trips_created || 0)) === 1 ? "" : "s"} across all scans.`
+                        : "Scan finished."}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="flex flex-col items-center gap-4">
+                  {scanning && (
+                    <div className="flex flex-col items-center gap-3 py-4">
+                      <Loader2 className="size-8 animate-spin text-primary" />
+                      <p className="text-sm text-muted-foreground">
+                        Reading your inbox...
+                      </p>
+                    </div>
+                  )}
+
+                  {scanError && (
+                    <div className="w-full max-w-xs rounded-lg border border-destructive/50 bg-destructive/10 p-3 text-center text-sm text-destructive">
+                      {scanError}
+                    </div>
+                  )}
+
+                  {fullScanResult && (
+                    <div className="w-full max-w-xs space-y-2 rounded-lg border border-border p-4 text-sm">
+                      {guidedResult && (
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">From guided search</span>
+                          <span className="font-medium">{guidedResult.trips_created}</span>
+                        </div>
+                      )}
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">
+                          {guidedResult ? "Additional trips found" : "Trips created"}
+                        </span>
+                        <span className="font-medium">{fullScanResult.trips_created}</span>
+                      </div>
+                      {guidedResult && (
+                        <div className="flex justify-between border-t pt-2">
+                          <span className="text-muted-foreground font-medium">Total trips</span>
+                          <span className="font-medium">
+                            {(guidedResult.trips_created || 0) + (fullScanResult.trips_created || 0)}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {!scanning && (
+                    <Button
+                      size="lg"
+                      className="w-full max-w-xs"
+                      onClick={() => setStep(5)}
+                    >
+                      <ChevronRight className="size-4" />
+                      Continue
+                    </Button>
+                  )}
+                </CardContent>
+              </>
+            )}
           </>
         )}
 

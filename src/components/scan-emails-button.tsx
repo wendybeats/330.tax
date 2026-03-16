@@ -10,6 +10,7 @@ interface ScanDebug {
   stage2_rejected: string[];
   stage3_legs: unknown[];
   stage4_stays: unknown[];
+  errors?: string[];
 }
 
 export function ScanEmailsButton({ taxYear }: { taxYear: number }) {
@@ -115,6 +116,14 @@ export function ScanEmailsButton({ taxYear }: { taxYear: number }) {
           <div>
             <p className="font-medium">Stays assembled: {debug.stage4_stays.length}</p>
           </div>
+          {debug.errors && debug.errors.length > 0 && (
+            <div>
+              <p className="font-medium text-destructive">Pipeline errors ({debug.errors.length}):</p>
+              {debug.errors.map((s, i) => (
+                <p key={i} className="text-destructive/80 truncate">• {s}</p>
+              ))}
+            </div>
+          )}
         </div>
       )}
       {error && <p className="text-xs text-destructive">{error}</p>}

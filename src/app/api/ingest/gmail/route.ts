@@ -3,8 +3,8 @@ import { createClient } from "@/lib/supabase/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { calculateFullDays } from "@/lib/trips";
 
-// Extend function timeout for email processing
-export const maxDuration = 60;
+// Extend function timeout for email processing (300s on Vercel Pro)
+export const maxDuration = 300;
 
 // ── Stage 0: Gmail search terms ──────────────────────────────────────
 // Two strategies combined:
@@ -35,8 +35,8 @@ const KEYWORD_QUERIES = [
 ];
 
 // Emails from these senders are almost certainly real bookings
-const SENDER_QUERIES = [
-  // Airlines
+// Split into two groups to keep each Gmail query under ~25 OR clauses
+const AIRLINE_SENDERS = [
   'from:airfrance', 'from:klm.com',
   'from:turkishairlines', 'from:thy.com',
   'from:flypgs.com', 'from:pegasusairlines',
@@ -47,7 +47,9 @@ const SENDER_QUERIES = [
   'from:wizzair.com', 'from:lot.com',
   'from:lufthansa.com', 'from:swiss.com',
   'from:emirates.com', 'from:qatarairways.com',
-  // OTAs
+];
+
+const OTA_SENDERS = [
   'from:kiwi.com',
   'from:booking.com', 'from:airbnb.com',
   'from:expedia.com', 'from:hotels.com',
@@ -56,12 +58,9 @@ const SENDER_QUERIES = [
   'from:flixbus.com',
   'from:justfly.com subject:confirmation',
   'from:flighthub subject:confirmation',
-  // Hotel chains
   'from:marriott.com', 'from:hilton.com', 'from:ihg.com',
   'from:hyatt.com', 'from:accor.com',
 ];
-
-const GMAIL_SEARCH_QUERY = [...KEYWORD_QUERIES, ...SENDER_QUERIES].join(" OR ");
 
 // ── Stage 1: Subject blocklist (zero cost) ───────────────────────────
 const SUBJECT_BLOCKLIST = [
@@ -249,6 +248,26 @@ function chunkArray<T>(arr: T[], size: number): T[][] {
   return chunks;
 }
 
+/** Run async tasks with at most `limit` in flight at once */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+
+  async function worker() {
+    while (next < items.length) {
+      const idx = next++;
+      results[idx] = await fn(items[idx]);
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()));
+  return results;
+}
+
 function stripHtml(html: string): string {
   let text = html;
   text = text.replace(/<style[\s\S]*?<\/style>/gi, "");
@@ -275,7 +294,12 @@ function parseJsonFromAI(response: Anthropic.Message): unknown {
     .join("");
   const jsonMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)```/);
   const jsonString = jsonMatch ? jsonMatch[1].trim() : responseText.trim();
-  return JSON.parse(jsonString);
+  try {
+    return JSON.parse(jsonString);
+  } catch (err) {
+    console.error("parseJsonFromAI failed. Raw text (first 500 chars):", jsonString.slice(0, 500));
+    throw new Error(`AI returned invalid JSON: ${err instanceof Error ? err.message : err}`);
+  }
 }
 
 function extractEmailBody(message: GmailMessageDetail): string {
@@ -317,7 +341,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { tax_year, force } = await request.json();
+  const { tax_year, force, user_hints } = await request.json();
 
   if (!tax_year) {
     return NextResponse.json(
@@ -402,37 +426,69 @@ export async function POST(request: NextRequest) {
 
   try {
     // ═══════════════════════════════════════════════════════════════════
-    // STAGE 0: Gmail Query
+    // STAGE 0: Gmail Query (split into 3 smaller queries)
+    // Gmail silently truncates huge OR queries. We run 3 focused queries
+    // in parallel and deduplicate by message ID.
     // 4-month pre-buffer, 1-month post-buffer to catch bookings made
     // before/after the tax year boundaries
     // ═══════════════════════════════════════════════════════════════════
+    const errors: string[] = [];
+
     const afterDate = `${tax_year - 1}/09/01`;
     const beforeDate = `${tax_year + 1}/01/31`;
-    const query = `(${GMAIL_SEARCH_QUERY}) after:${afterDate} before:${beforeDate}`;
-    const searchUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=250`;
+    const dateRange = `after:${afterDate} before:${beforeDate}`;
 
-    const searchResponse = await fetch(searchUrl, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
+    // When user provides city/country hints, build a single focused query
+    // instead of the broad 3-query search. Much faster (~15s vs ~60s+).
+    const hints = Array.isArray(user_hints)
+      ? user_hints.filter((h: unknown): h is string => typeof h === "string" && h.trim().length > 0)
+      : [];
 
-    if (!searchResponse.ok) {
-      const errorText = await searchResponse.text();
-      let errorMessage = "Gmail API error";
-      if (searchResponse.status === 403) {
-        errorMessage =
-          "Gmail access denied. Make sure you granted Gmail read access when signing in.";
-      } else if (searchResponse.status === 401) {
-        errorMessage =
-          "Gmail token expired. Please log out and sign in again.";
+    const queries = hints.length > 0
+      ? [`(${hints.map((h: string) => `"${h.trim()}"`).join(" OR ")}) ${dateRange}`]
+      : [
+          `(${KEYWORD_QUERIES.join(" OR ")}) ${dateRange}`,
+          `(${AIRLINE_SENDERS.join(" OR ")}) ${dateRange}`,
+          `(${OTA_SENDERS.join(" OR ")}) ${dateRange}`,
+        ];
+
+    async function searchGmail(query: string): Promise<GmailMessage[]> {
+      const searchUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=250`;
+      const searchResponse = await fetch(searchUrl, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+
+      if (!searchResponse.ok) {
+        const errorText = await searchResponse.text();
+        if (searchResponse.status === 403) {
+          throw new Error("Gmail access denied. Make sure you granted Gmail read access when signing in.");
+        } else if (searchResponse.status === 401) {
+          throw new Error("Gmail token expired. Please log out and sign in again.");
+        }
+        throw new Error(`Gmail API error (${searchResponse.status}): ${errorText}`);
       }
-      return NextResponse.json(
-        { error: errorMessage, details: errorText },
-        { status: searchResponse.status }
-      );
+
+      const searchData = await searchResponse.json();
+      return searchData.messages || [];
     }
 
-    const searchData = await searchResponse.json();
-    const messages: GmailMessage[] = searchData.messages || [];
+    // Run all 3 queries in parallel
+    const searchResults = await Promise.all(
+      queries.map((q) => searchGmail(q).catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        errors.push(`Gmail search failed: ${msg}`);
+        return [] as GmailMessage[];
+      }))
+    );
+
+    // Deduplicate by message ID
+    const messageMap = new Map<string, GmailMessage>();
+    for (const results of searchResults) {
+      for (const msg of results) {
+        messageMap.set(msg.id, msg);
+      }
+    }
+    const messages: GmailMessage[] = Array.from(messageMap.values());
 
     if (messages.length === 0) {
       return NextResponse.json({
@@ -477,31 +533,34 @@ export async function POST(request: NextRequest) {
     // ═══════════════════════════════════════════════════════════════════
 
     // Fetch metadata (subject + snippet) for all emails — lightweight
-    const metadataPromises = newMessages.slice(0, 250).map(async (msg) => {
-      try {
-        const msgUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From`;
-        const msgResponse = await fetch(msgUrl, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        if (!msgResponse.ok) return null;
+    // Concurrency-limited to avoid Gmail rate limits
+    const metadataResults = await mapWithConcurrency(
+      newMessages.slice(0, 250),
+      20,
+      async (msg) => {
+        try {
+          const msgUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From`;
+          const msgResponse = await fetch(msgUrl, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+          });
+          if (!msgResponse.ok) return null;
 
-        const msgData = await msgResponse.json();
-        const subject =
-          msgData.payload?.headers?.find(
-            (h: { name: string; value: string }) => h.name.toLowerCase() === "subject"
-          )?.value || "";
-        const from =
-          msgData.payload?.headers?.find(
-            (h: { name: string; value: string }) => h.name.toLowerCase() === "from"
-          )?.value || "";
+          const msgData = await msgResponse.json();
+          const subject =
+            msgData.payload?.headers?.find(
+              (h: { name: string; value: string }) => h.name.toLowerCase() === "subject"
+            )?.value || "";
+          const from =
+            msgData.payload?.headers?.find(
+              (h: { name: string; value: string }) => h.name.toLowerCase() === "from"
+            )?.value || "";
 
-        return { id: msg.id, subject, from, snippet: msgData.snippet || "" };
-      } catch {
-        return null;
-      }
-    });
-
-    const metadataResults = await Promise.all(metadataPromises);
+          return { id: msg.id, subject, from, snippet: msgData.snippet || "" };
+        } catch {
+          return null;
+        }
+      },
+    );
     const allMetadata = metadataResults.filter((r): r is NonNullable<typeof r> => r !== null);
 
     // Apply subject blocklist
@@ -531,27 +590,30 @@ export async function POST(request: NextRequest) {
     }
 
     // Now fetch full bodies only for filtered emails (saves time + bandwidth)
+    // Concurrency-limited to avoid Gmail rate limits
     const emailSummaries: EmailSummary[] = [];
 
-    const fetchPromises = filtered.slice(0, 100).map(async (meta) => {
-      try {
-        const msgUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${meta.id}?format=full`;
-        const msgResponse = await fetch(msgUrl, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        if (!msgResponse.ok) return null;
+    const bodyResults = await mapWithConcurrency(
+      filtered.slice(0, 100),
+      20,
+      async (meta) => {
+        try {
+          const msgUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${meta.id}?format=full`;
+          const msgResponse = await fetch(msgUrl, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+          });
+          if (!msgResponse.ok) return null;
 
-        const msgData: GmailMessageDetail = await msgResponse.json();
-        const rawBody = extractEmailBody(msgData);
-        const body = stripHtml(rawBody).slice(0, 4000);
+          const msgData: GmailMessageDetail = await msgResponse.json();
+          const rawBody = extractEmailBody(msgData);
+          const body = stripHtml(rawBody).slice(0, 4000);
 
-        return { id: meta.id, subject: meta.subject, snippet: meta.snippet, body };
-      } catch {
-        return null;
-      }
-    });
-
-    const bodyResults = await Promise.all(fetchPromises);
+          return { id: meta.id, subject: meta.subject, snippet: meta.snippet, body };
+        } catch {
+          return null;
+        }
+      },
+    );
     for (const r of bodyResults) {
       if (r) emailSummaries.push(r);
     }
@@ -611,7 +673,10 @@ export async function POST(request: NextRequest) {
           }
         }
         return confirmed;
-      } catch {
+      } catch (err) {
+        const msg = `Stage 2 triage failed: ${err instanceof Error ? err.message : err}`;
+        console.error(msg);
+        errors.push(msg);
         // On triage failure, pass all emails through
         return batch;
       }
@@ -684,7 +749,10 @@ export async function POST(request: NextRequest) {
 
         const parsed = parseJsonFromAI(response) as { leg_count?: number; legs: ExtractedLeg[] };
         return parsed.legs || [];
-      } catch {
+      } catch (err) {
+        const msg = `Stage 3 extraction failed: ${err instanceof Error ? err.message : err}`;
+        console.error(msg);
+        errors.push(msg);
         return [];
       }
     });
@@ -753,7 +821,10 @@ export async function POST(request: NextRequest) {
       if (assemblyData.warnings && assemblyData.warnings.length > 0) {
         console.warn("Assembly warnings:", assemblyData.warnings);
       }
-    } catch {
+    } catch (err) {
+      const msg = `Stage 4 assembly failed: ${err instanceof Error ? err.message : err}`;
+      console.error(msg);
+      errors.push(msg);
       // Fallback: convert each leg into a simple stay
       stays = allLegs.map((leg) => ({
           country: leg.destination_country,
@@ -852,6 +923,7 @@ export async function POST(request: NextRequest) {
         stage2_rejected: triagedOutSubjects,
         stage3_legs: allLegs,
         stage4_stays: stays,
+        errors,
       },
     });
   } catch (error) {
