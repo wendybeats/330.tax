@@ -632,57 +632,59 @@ export async function POST(request: NextRequest) {
     // ═══════════════════════════════════════════════════════════════════
     // STAGE 2: Haiku Triage (~$0.01)
     // Cheap classification using subject + snippet (no full body needed)
-    // Batched 15 per call, run in parallel
+    // Batched 15 per call, concurrency-limited to avoid rate limits
     // ═══════════════════════════════════════════════════════════════════
     const TRIAGE_BATCH_SIZE = 15;
     const triageBatches = chunkArray(emailSummaries, TRIAGE_BATCH_SIZE);
     const bookingEmails: EmailSummary[] = [];
 
-    const triagePromises = triageBatches.map(async (batch) => {
-      const emailBlock = batch
-        .map(
-          (e, i) =>
-            `[Email ${i + 1}] Subject: ${e.subject}\n${e.body.slice(0, 1000)}`
-        )
-        .join("\n\n");
+    const triageResults = await mapWithConcurrency(
+      triageBatches,
+      5,
+      async (batch) => {
+        const emailBlock = batch
+          .map(
+            (e, i) =>
+              `[Email ${i + 1}] Subject: ${e.subject}\n${e.body.slice(0, 1000)}`
+          )
+          .join("\n\n");
 
-      try {
-        const response = await anthropic.messages.create({
-          model: "claude-haiku-4-5-20251001",
-          max_tokens: 1024,
-          messages: [
-            {
-              role: "user",
-              content: `${TRIAGE_PROMPT}\n\n${emailBlock}`,
-            },
-          ],
-        });
+        try {
+          const response = await anthropic.messages.create({
+            model: "claude-haiku-4-5-20251001",
+            max_tokens: 1024,
+            messages: [
+              {
+                role: "user",
+                content: `${TRIAGE_PROMPT}\n\n${emailBlock}`,
+              },
+            ],
+          });
 
-        const labels = parseJsonFromAI(response) as Array<{
-          email: number;
-          label: string;
-        }>;
-        const confirmed: EmailSummary[] = [];
-        for (const label of labels) {
-          if (
-            label.label === "BOOKING" &&
-            label.email >= 1 &&
-            label.email <= batch.length
-          ) {
-            confirmed.push(batch[label.email - 1]);
+          const labels = parseJsonFromAI(response) as Array<{
+            email: number;
+            label: string;
+          }>;
+          const confirmed: EmailSummary[] = [];
+          for (const label of labels) {
+            if (
+              label.label === "BOOKING" &&
+              label.email >= 1 &&
+              label.email <= batch.length
+            ) {
+              confirmed.push(batch[label.email - 1]);
+            }
           }
+          return confirmed;
+        } catch (err) {
+          const msg = `Stage 2 triage failed: ${err instanceof Error ? err.message : err}`;
+          console.error(msg);
+          errors.push(msg);
+          // On triage failure, pass all emails through
+          return batch;
         }
-        return confirmed;
-      } catch (err) {
-        const msg = `Stage 2 triage failed: ${err instanceof Error ? err.message : err}`;
-        console.error(msg);
-        errors.push(msg);
-        // On triage failure, pass all emails through
-        return batch;
-      }
-    });
-
-    const triageResults = await Promise.all(triagePromises);
+      },
+    );
     for (const confirmed of triageResults) {
       bookingEmails.push(...confirmed);
     }
@@ -721,43 +723,45 @@ export async function POST(request: NextRequest) {
     // ═══════════════════════════════════════════════════════════════════
     // STAGE 3: Sonnet Extraction (~$0.10)
     // Extract individual transport LEGS from confirmed bookings
-    // Batched 2 emails per call, run in parallel
+    // Batched 2 emails per call, concurrency-limited to avoid rate limits
     // ═══════════════════════════════════════════════════════════════════
     const EXTRACT_BATCH_SIZE = 2;
     const extractBatches = chunkArray(bookingEmails, EXTRACT_BATCH_SIZE);
     const allLegs: ExtractedLeg[] = [];
 
-    const extractionPromises = extractBatches.map(async (batch) => {
-      const emailBlock = batch
-        .map(
-          (e, i) =>
-            `--- EMAIL ${i + 1} ---\nSubject: ${e.subject}\n\n${e.body}\n--- END EMAIL ${i + 1} ---`
-        )
-        .join("\n\n");
+    const extractionResults = await mapWithConcurrency(
+      extractBatches,
+      3, // Sonnet has a 30k TPM limit — 3 concurrent calls stays under it
+      async (batch) => {
+        const emailBlock = batch
+          .map(
+            (e, i) =>
+              `--- EMAIL ${i + 1} ---\nSubject: ${e.subject}\n\n${e.body}\n--- END EMAIL ${i + 1} ---`
+          )
+          .join("\n\n");
 
-      try {
-        const response = await anthropic.messages.create({
-          model: "claude-sonnet-4-6",
-          max_tokens: 4096,
-          messages: [
-            {
-              role: "user",
-              content: `${EXTRACTION_PROMPT}\n\n${emailBlock}`,
-            },
-          ],
-        });
+        try {
+          const response = await anthropic.messages.create({
+            model: "claude-sonnet-4-6",
+            max_tokens: 4096,
+            messages: [
+              {
+                role: "user",
+                content: `${EXTRACTION_PROMPT}\n\n${emailBlock}`,
+              },
+            ],
+          });
 
-        const parsed = parseJsonFromAI(response) as { leg_count?: number; legs: ExtractedLeg[] };
-        return parsed.legs || [];
-      } catch (err) {
-        const msg = `Stage 3 extraction failed: ${err instanceof Error ? err.message : err}`;
-        console.error(msg);
-        errors.push(msg);
-        return [];
-      }
-    });
-
-    const extractionResults = await Promise.all(extractionPromises);
+          const parsed = parseJsonFromAI(response) as { leg_count?: number; legs: ExtractedLeg[] };
+          return parsed.legs || [];
+        } catch (err) {
+          const msg = `Stage 3 extraction failed: ${err instanceof Error ? err.message : err}`;
+          console.error(msg);
+          errors.push(msg);
+          return [];
+        }
+      },
+    );
     for (const legs of extractionResults) {
       allLegs.push(...legs);
     }
