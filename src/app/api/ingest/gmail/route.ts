@@ -335,6 +335,50 @@ async function callAnthropicWithRetry(
   throw new Error("Unreachable");
 }
 
+/**
+ * Merge overlapping or adjacent stays for the same country.
+ * Prevents duplicates from multi-email extraction and fallback assembly.
+ */
+function mergeStays(stays: AssembledStay[]): AssembledStay[] {
+  if (stays.length <= 1) return stays;
+
+  // Sort by country, then by arrival date
+  const sorted = [...stays].sort((a, b) => {
+    if (a.country !== b.country) return a.country.localeCompare(b.country);
+    return a.date_arrived.localeCompare(b.date_arrived);
+  });
+
+  const confidenceRank: Record<string, number> = { HIGH: 3, MEDIUM: 2, LOW: 1 };
+  const merged: AssembledStay[] = [];
+  let current = { ...sorted[0] };
+
+  for (let i = 1; i < sorted.length; i++) {
+    const next = sorted[i];
+    // Same country and overlapping or adjacent (within 1 day)
+    if (next.country === current.country && next.date_arrived <= current.date_departed) {
+      // Extend departure if needed
+      if (next.date_departed > current.date_departed) {
+        current.date_departed = next.date_departed;
+      }
+      // Keep higher confidence
+      if ((confidenceRank[next.confidence] || 0) > (confidenceRank[current.confidence] || 0)) {
+        current.confidence = next.confidence;
+      }
+      // Merge notes
+      if (next.notes && next.notes !== current.notes) {
+        current.notes = current.notes ? `${current.notes}; ${next.notes}` : next.notes;
+      }
+    } else {
+      merged.push(current);
+      current = { ...next };
+    }
+  }
+  merged.push(current);
+
+  // Re-sort chronologically
+  return merged.sort((a, b) => a.date_arrived.localeCompare(b.date_arrived));
+}
+
 function stripHtml(html: string): string {
   let text = html;
   text = text.replace(/<style[\s\S]*?<\/style>/gi, "");
@@ -950,7 +994,7 @@ export async function POST(request: NextRequest) {
         legs_unused?: number[];
         warnings?: string[];
       };
-      stays = assemblyData.stays || [];
+      stays = mergeStays(assemblyData.stays || []);
 
       if (assemblyData.legs_unused && assemblyData.legs_unused.length > 0) {
         console.warn("Assembly: unused legs:", assemblyData.legs_unused);
@@ -962,14 +1006,15 @@ export async function POST(request: NextRequest) {
       const msg = `Stage 4 assembly failed: ${err instanceof Error ? err.message : err}`;
       console.error(msg);
       errors.push(msg);
-      // Fallback: convert each leg into a simple stay
-      stays = allLegs.map((leg) => ({
+      // Fallback: convert legs into stays and merge same-country overlaps
+      const rawStays = allLegs.map((leg) => ({
           country: leg.destination_country,
           date_arrived: leg.arrival_date || leg.departure_date,
           date_departed: leg.arrival_date || leg.departure_date,
-          confidence: "LOW",
-          notes: "Fallback: assembly failed, created from individual leg",
+          confidence: "LOW" as const,
+          notes: "Fallback: assembly failed",
         }));
+      stays = mergeStays(rawStays);
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -1002,8 +1047,35 @@ export async function POST(request: NextRequest) {
       await supabase.from("raw_sources").insert(rawSourceRows);
     }
 
-    // Create trip records from assembled stays in a single batch
-    const tripRows = stays
+    // ═══════════════════════════════════════════════════════════════════
+    // Merge with existing trips so multi-scan flows don't create dupes
+    // ═══════════════════════════════════════════════════════════════════
+    const { data: existingTrips } = await supabase
+      .from("trips")
+      .select("country, date_arrived, date_departed, confidence, notes")
+      .eq("user_id", user.id)
+      .eq("tax_year", tax_year);
+
+    // Convert existing trips to stays format and combine
+    const existingStays: AssembledStay[] = (existingTrips || []).map((t) => ({
+      country: t.country,
+      date_arrived: t.date_arrived,
+      date_departed: t.date_departed,
+      confidence: t.confidence || "MEDIUM",
+      notes: t.notes || "",
+    }));
+
+    const combinedStays = mergeStays([...existingStays, ...stays]);
+
+    // Delete all existing trips — this assembly is now authoritative
+    await supabase
+      .from("trips")
+      .delete()
+      .eq("user_id", user.id)
+      .eq("tax_year", tax_year);
+
+    // Create trip records from merged stays
+    const tripRows = combinedStays
       .filter((stay) => {
         if (!stay.country || !stay.date_arrived) return false;
         if (!stay.date_arrived.match(/^\d{4}-\d{2}-\d{2}$/)) return false;
