@@ -62,18 +62,63 @@ const OTA_SENDERS = [
   'from:hyatt.com', 'from:accor.com',
 ];
 
+// ── Server-side Gmail exclusions (applied to keyword query only) ──────
+const GMAIL_EXCLUSIONS = [
+  '-subject:newsletter',
+  '-subject:unsubscribe',
+  '-subject:promotion',
+  '-subject:"price alert"',
+  '-subject:"fare alert"',
+  '-label:promotions',
+  '-label:spam',
+];
+
 // ── Stage 1: Subject blocklist (zero cost) ───────────────────────────
 const SUBJECT_BLOCKLIST = [
-  "sale", "% off", "deal", "earn miles", "credit card", "statement",
-  "promotion", "newsletter", "survey", "feedback",
-  "price alert", "fare alert", "explore", "discover", "dream",
-  "flash sale", "price drop", "exclusive offer", "limited time",
+  "% off", "flash sale", "credit card", "statement",
+  "newsletter", "survey", "feedback",
+  "fare alert", "explore destinations", "discover",
+  "price drop", "exclusive offer", "limited time",
   "membership rewards", "gold card", "platinum card", "delta card",
   "year-end summary", "unlock $", "annual value", "perks await",
   "special offer", "rewards is here", "don't miss out",
   "your trip with uber", "uber receipt",
-  "car upgrade", "travel insurance",
+  "travel insurance",
   "electronic messages information",
+];
+
+// ── Stage 1b: Subject whitelist (overrides blocklist) ────────────────
+// Strong positive signals — if any of these appear in the subject,
+// the email passes regardless of blocklist matches.
+const SUBJECT_WHITELIST = [
+  "pnr",
+  "ticket details",
+  "confirmation number",
+  "booking reference",
+  "record locator",
+  "e-ticket",
+  "boarding pass",
+  "itinerary receipt",
+  "check-in confirmation",
+  "booking confirmed",
+  "reservation confirmed",
+  "your ticket",
+];
+
+// "Booking 593629113" — a booking reference number right after the word
+const BOOKING_NUMBER_REGEX = /booking\s+\d{4,}/i;
+
+// Known sender domains for blocklist bypass (extracted from AIRLINE_SENDERS + OTA_SENDERS)
+const KNOWN_SENDER_DOMAINS = [
+  "airfrance", "klm.com", "turkishairlines", "thy.com", "flypgs.com",
+  "pegasusairlines", "delta.com", "united.com", "aa.com",
+  "southwest.com", "jetblue.com", "british-airways", "virginatlantic",
+  "easyjet.com", "ryanair.com", "vueling.com", "wizzair.com", "lot.com",
+  "lufthansa.com", "swiss.com", "emirates.com", "qatarairways.com",
+  "kiwi.com", "booking.com", "airbnb.com", "expedia.com", "hotels.com",
+  "kayak.com", "skyscanner.com", "omio.com", "trainline.com",
+  "flixbus.com", "justfly.com", "flighthub.com",
+  "marriott.com", "hilton.com", "ihg.com", "hyatt.com", "accor.com",
 ];
 
 // ── Stage 2: Haiku triage prompt ─────────────────────────────────────
@@ -268,6 +313,28 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
+/** Retry-aware wrapper for Anthropic API calls (handles 429 rate limits) */
+async function callAnthropicWithRetry(
+  createFn: () => Promise<Anthropic.Message>,
+  maxRetries = 3,
+): Promise<Anthropic.Message> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await createFn();
+    } catch (err) {
+      const is429 = err instanceof Error && err.message.includes("429");
+      if (is429 && attempt < maxRetries) {
+        // Exponential backoff: 5s, 10s, 20s
+        const delay = 5000 * Math.pow(2, attempt);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error("Unreachable");
+}
+
 function stripHtml(html: string): string {
   let text = html;
   text = text.replace(/<style[\s\S]*?<\/style>/gi, "");
@@ -444,32 +511,52 @@ export async function POST(request: NextRequest) {
       ? user_hints.filter((h: unknown): h is string => typeof h === "string" && h.trim().length > 0)
       : [];
 
+    // Server-side exclusions applied to keyword query only (sender queries are high precision)
+    const exclusionClause = GMAIL_EXCLUSIONS.join(' ');
+
     const queries = hints.length > 0
       ? [`(${hints.map((h: string) => `"${h.trim()}"`).join(" OR ")}) ${dateRange}`]
       : [
-          `(${KEYWORD_QUERIES.join(" OR ")}) ${dateRange}`,
+          `(${KEYWORD_QUERIES.join(" OR ")}) ${exclusionClause} ${dateRange}`,
           `(${AIRLINE_SENDERS.join(" OR ")}) ${dateRange}`,
           `(${OTA_SENDERS.join(" OR ")}) ${dateRange}`,
         ];
 
-    async function searchGmail(query: string): Promise<GmailMessage[]> {
-      const searchUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=250`;
-      const searchResponse = await fetch(searchUrl, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
+    async function searchGmail(query: string, maxTotal = 500): Promise<GmailMessage[]> {
+      const allMessages: GmailMessage[] = [];
+      let pageToken: string | undefined;
 
-      if (!searchResponse.ok) {
-        const errorText = await searchResponse.text();
-        if (searchResponse.status === 403) {
-          throw new Error("Gmail access denied. Make sure you granted Gmail read access when signing in.");
-        } else if (searchResponse.status === 401) {
-          throw new Error("Gmail token expired. Please log out and sign in again.");
+      while (allMessages.length < maxTotal) {
+        const remaining = maxTotal - allMessages.length;
+        const pageSize = Math.min(250, remaining);
+        let searchUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=${pageSize}`;
+        if (pageToken) {
+          searchUrl += `&pageToken=${encodeURIComponent(pageToken)}`;
         }
-        throw new Error(`Gmail API error (${searchResponse.status}): ${errorText}`);
+
+        const searchResponse = await fetch(searchUrl, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+
+        if (!searchResponse.ok) {
+          const errorText = await searchResponse.text();
+          if (searchResponse.status === 403) {
+            throw new Error("Gmail access denied. Make sure you granted Gmail read access when signing in.");
+          } else if (searchResponse.status === 401) {
+            throw new Error("Gmail token expired. Please log out and sign in again.");
+          }
+          throw new Error(`Gmail API error (${searchResponse.status}): ${errorText}`);
+        }
+
+        const searchData = await searchResponse.json();
+        const messages: GmailMessage[] = searchData.messages || [];
+        allMessages.push(...messages);
+
+        pageToken = searchData.nextPageToken;
+        if (!pageToken || messages.length === 0) break;
       }
 
-      const searchData = await searchResponse.json();
-      return searchData.messages || [];
+      return allMessages;
     }
 
     // Run all 3 queries in parallel
@@ -480,6 +567,16 @@ export async function POST(request: NextRequest) {
         return [] as GmailMessage[];
       }))
     );
+
+    // Track which messages came from sender queries (high precision)
+    const senderMatchIds = new Set<string>();
+    if (searchResults.length > 1) {
+      for (const results of searchResults.slice(1)) {
+        for (const msg of results) {
+          senderMatchIds.add(msg.id);
+        }
+      }
+    }
 
     // Deduplicate by message ID
     const messageMap = new Map<string, GmailMessage>();
@@ -535,7 +632,7 @@ export async function POST(request: NextRequest) {
     // Fetch metadata (subject + snippet) for all emails — lightweight
     // Concurrency-limited to avoid Gmail rate limits
     const metadataResults = await mapWithConcurrency(
-      newMessages.slice(0, 250),
+      newMessages,
       20,
       async (msg) => {
         try {
@@ -563,9 +660,31 @@ export async function POST(request: NextRequest) {
     );
     const allMetadata = metadataResults.filter((r): r is NonNullable<typeof r> => r !== null);
 
-    // Apply subject blocklist
+    // Apply subject blocklist with whitelist + sender override
+    let whitelistSaved = 0;
+    const whitelistedSubjects: string[] = [];
     const filtered = allMetadata.filter((email) => {
       const subjectLower = email.subject.toLowerCase();
+      const fromLower = email.from.toLowerCase();
+
+      // Whitelist override: strong positive signals always pass
+      const subjectWhitelisted = SUBJECT_WHITELIST.some((term) => subjectLower.includes(term))
+        || BOOKING_NUMBER_REGEX.test(email.subject);
+
+      // Sender override: emails from known airlines/OTAs always pass
+      const fromKnownSender = KNOWN_SENDER_DOMAINS.some((d) => fromLower.includes(d));
+
+      if (subjectWhitelisted || fromKnownSender) {
+        // Check if this would have been blocked — track for debug output
+        const wouldBeBlocked = SUBJECT_BLOCKLIST.some((term) => subjectLower.includes(term));
+        if (wouldBeBlocked) {
+          whitelistSaved++;
+          whitelistedSubjects.push(email.subject);
+        }
+        return true;
+      }
+
+      // Standard blocklist
       return !SUBJECT_BLOCKLIST.some((term) => subjectLower.includes(term));
     });
 
@@ -589,12 +708,19 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    // Sort: sender-matched emails first (high precision), then keyword-only
+    const filteredSorted = [...filtered].sort((a, b) => {
+      const aIsSender = senderMatchIds.has(a.id) ? 0 : 1;
+      const bIsSender = senderMatchIds.has(b.id) ? 0 : 1;
+      return aIsSender - bIsSender;
+    });
+
     // Now fetch full bodies only for filtered emails (saves time + bandwidth)
     // Concurrency-limited to avoid Gmail rate limits
     const emailSummaries: EmailSummary[] = [];
 
     const bodyResults = await mapWithConcurrency(
-      filtered.slice(0, 100),
+      filteredSorted.slice(0, 200),
       20,
       async (meta) => {
         try {
@@ -650,16 +776,18 @@ export async function POST(request: NextRequest) {
           .join("\n\n");
 
         try {
-          const response = await anthropic.messages.create({
-            model: "claude-haiku-4-5-20251001",
-            max_tokens: 1024,
-            messages: [
-              {
-                role: "user",
-                content: `${TRIAGE_PROMPT}\n\n${emailBlock}`,
-              },
-            ],
-          });
+          const response = await callAnthropicWithRetry(() =>
+            anthropic.messages.create({
+              model: "claude-haiku-4-5-20251001",
+              max_tokens: 1024,
+              messages: [
+                {
+                  role: "user",
+                  content: `${TRIAGE_PROMPT}\n\n${emailBlock}`,
+                },
+              ],
+            })
+          );
 
           const labels = parseJsonFromAI(response) as Array<{
             email: number;
@@ -721,17 +849,18 @@ export async function POST(request: NextRequest) {
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // STAGE 3: Sonnet Extraction (~$0.10)
+    // STAGE 3: Sonnet Extraction
     // Extract individual transport LEGS from confirmed bookings
-    // Batched 2 emails per call, concurrency-limited to avoid rate limits
+    // Batched 5 emails per call, sequential to respect 30K TPM limit,
+    // with retry logic for 429 rate limits
     // ═══════════════════════════════════════════════════════════════════
-    const EXTRACT_BATCH_SIZE = 2;
+    const EXTRACT_BATCH_SIZE = 5;
     const extractBatches = chunkArray(bookingEmails, EXTRACT_BATCH_SIZE);
     const allLegs: ExtractedLeg[] = [];
 
     const extractionResults = await mapWithConcurrency(
       extractBatches,
-      3, // Sonnet has a 30k TPM limit — 3 concurrent calls stays under it
+      1, // Sequential — 30K TPM limit means concurrent calls cause 429s
       async (batch) => {
         const emailBlock = batch
           .map(
@@ -741,16 +870,18 @@ export async function POST(request: NextRequest) {
           .join("\n\n");
 
         try {
-          const response = await anthropic.messages.create({
-            model: "claude-sonnet-4-6",
-            max_tokens: 4096,
-            messages: [
-              {
-                role: "user",
-                content: `${EXTRACTION_PROMPT}\n\n${emailBlock}`,
-              },
-            ],
-          });
+          const response = await callAnthropicWithRetry(() =>
+            anthropic.messages.create({
+              model: "claude-sonnet-4-6",
+              max_tokens: 4096,
+              messages: [
+                {
+                  role: "user",
+                  content: `${EXTRACTION_PROMPT}\n\n${emailBlock}`,
+                },
+              ],
+            })
+          );
 
           const parsed = parseJsonFromAI(response) as { leg_count?: number; legs: ExtractedLeg[] };
           return parsed.legs || [];
@@ -800,16 +931,18 @@ export async function POST(request: NextRequest) {
     let stays: AssembledStay[] = [];
 
     try {
-      const assemblyResponse = await anthropic.messages.create({
-        model: "claude-sonnet-4-6",
-        max_tokens: 4096,
-        messages: [
-          {
-            role: "user",
-            content: `${buildAssemblyPrompt(taxHomeCountry, tax_year, allLegs.length, userName)}\n\nHere are ${allLegs.length} legs to assemble:\n\n${legsBlock}`,
-          },
-        ],
-      });
+      const assemblyResponse = await callAnthropicWithRetry(() =>
+        anthropic.messages.create({
+          model: "claude-sonnet-4-6",
+          max_tokens: 4096,
+          messages: [
+            {
+              role: "user",
+              content: `${buildAssemblyPrompt(taxHomeCountry, tax_year, allLegs.length, userName)}\n\nHere are ${allLegs.length} legs to assemble:\n\n${legsBlock}`,
+            },
+          ],
+        })
+      );
 
       const assemblyData = parseJsonFromAI(assemblyResponse) as {
         stays: AssembledStay[];
@@ -924,6 +1057,9 @@ export async function POST(request: NextRequest) {
       trips_created: tripsCreated,
       debug: {
         stage1_blocked: filteredOutSubjects,
+        stage1_whitelisted: whitelistedSubjects,
+        stage1_whitelist_saved: whitelistSaved,
+        total_candidates_before_dedup: searchResults.reduce((sum, r) => sum + r.length, 0),
         stage2_rejected: triagedOutSubjects,
         stage3_legs: allLegs,
         stage4_stays: stays,
