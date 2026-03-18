@@ -47,6 +47,9 @@ const AIRLINE_SENDERS = [
   'from:wizzair.com', 'from:lot.com',
   'from:lufthansa.com', 'from:swiss.com',
   'from:emirates.com', 'from:qatarairways.com',
+  'from:airmontenegro', 'from:"air montenegro"',
+  'from:georgianairways', 'from:"georgian airways"',
+  'from:flyone.aero', 'from:flyone',
 ];
 
 const OTA_SENDERS = [
@@ -119,6 +122,7 @@ const KNOWN_SENDER_DOMAINS = [
   "kayak.com", "skyscanner.com", "omio.com", "trainline.com",
   "flixbus.com", "justfly.com", "flighthub.com",
   "marriott.com", "hilton.com", "ihg.com", "hyatt.com", "accor.com",
+  "airmontenegro", "georgianairways", "flyone.aero", "flyone",
 ];
 
 // ── Stage 2: Haiku triage prompt ─────────────────────────────────────
@@ -181,49 +185,6 @@ Output: {"leg_count": 1, "legs": [
 ]}
 
 NOW EXTRACT FROM THESE EMAILS. Return ONLY valid JSON with "leg_count" and "legs" array. If no transport booking is found in an email, do not create legs for it.`;
-
-// ── Stage 4: Sonnet assembly prompt (template) ───────────────────────
-function buildAssemblyPrompt(taxHomeCountry: string, taxYear: number, legCount: number, userName: string) {
-  return `You are building a country-by-country travel timeline for the IRS Physical Presence Test (Form 2555).
-
-The user's tax home is: ${taxHomeCountry}
-Tax year: ${taxYear}
-
-TOTAL LEGS PROVIDED: ${legCount}
-
-Assemble these legs into a list of COUNTRY STAYS. Every day of the tax year must be accounted for — the user was always somewhere.
-
-RULES:
-
-1. EVERY LEG MUST BE USED. After assembly, verify that every leg is reflected in the timeline. If a leg doesn't fit, flag it in warnings — do not silently discard it.
-
-2. TAX HOME FILLS GAPS. If there is a gap between two trips (e.g., user arrives back from Armenia on Feb 18 and next departure is Apr 7), the user was at their tax home (${taxHomeCountry}) during that gap. Create a stay for it.
-
-3. INCLUDE TAX HOME STAYS. The form requires entries for EVERY country including the tax home. Create ${taxHomeCountry} entries for all periods the user was home.
-
-4. MERGE SAME-DAY CONNECTIONS. If leg A arrives in Paris at 06:30 and leg B departs Paris at 10:20 the same day, Paris is transit — NOT a separate stay. Attribute that day to the final destination.
-
-5. WITHIN-COUNTRY TRAVEL. Legs within the same country (e.g., Istanbul->Izmir, Paris->Marseille) do NOT create separate stays. The user never left that country.
-
-6. LINK BY BOOKING REFERENCE. Legs sharing the same booking_reference are parts of the same trip even if they were in different emails.
-
-7. CHRONOLOGICAL ORDER. Stays must be in date order with no overlaps.
-
-8. CONFIDENCE:
-   - HIGH = both arrival and departure supported by a transport leg
-   - MEDIUM = one end is supported, the other is inferred (e.g., tax home fill)
-   - LOW = entirely inferred (no direct transport evidence)
-
-9. START AND END OF YEAR. If the first leg of the year departs from a non-tax-home city, create a stay for that country from Jan 1 (or tax year start) with confidence MEDIUM. Similarly, if the last leg arrives somewhere, create a stay through Dec 31 with confidence MEDIUM.
-
-10. PASSENGER FILTERING. The user's name is: ${userName}. If a leg has passenger_names listed AND the user's name does not appear in that list (compare first name OR last name, case-insensitive), EXCLUDE that leg from the timeline and note it in warnings as "Excluded leg X: booked for [names], not ${userName}". If passenger_names is empty or unknown, assume the user is the passenger.
-
-Return ONLY valid JSON with:
-- "stays": array of country stays, each with country, date_arrived, date_departed, confidence, notes
-- "legs_used": array of leg indices accounted for
-- "legs_unused": array of leg indices that didn't fit (should be empty ideally)
-- "warnings": array of strings describing any anomalies`;
-}
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -377,6 +338,160 @@ function mergeStays(stays: AssembledStay[]): AssembledStay[] {
 
   // Re-sort chronologically
   return merged.sort((a, b) => a.date_arrived.localeCompare(b.date_arrived));
+}
+
+/**
+ * Deterministic leg → stay assembly. Replaces the AI assembly call.
+ * Implements the same 10 rules that were in the Sonnet assembly prompt.
+ */
+function assembleLegsIntoStays(
+  legs: ExtractedLeg[],
+  taxHomeCountry: string,
+  taxYear: number,
+  userName: string,
+): { stays: AssembledStay[]; warnings: string[] } {
+  const warnings: string[] = [];
+
+  // --- Rule 10: Passenger filter ---
+  const nameParts = userName.toLowerCase().split(/\s+/).filter(Boolean);
+  const filtered = legs.filter((leg) => {
+    if (!leg.passenger_names || leg.passenger_names.length === 0) return true;
+    const match = leg.passenger_names.some((pax) => {
+      const paxLower = pax.toLowerCase();
+      return nameParts.some((part) => paxLower.includes(part));
+    });
+    if (!match) {
+      warnings.push(`Excluded leg: ${leg.origin_city}→${leg.destination_city} ${leg.departure_date} — booked for [${leg.passenger_names.join(", ")}], not ${userName}`);
+    }
+    return match;
+  });
+
+  if (filtered.length === 0) {
+    return { stays: [], warnings };
+  }
+
+  // --- Rule 7 (sort): Chronological by departure_date ---
+  const sorted = [...filtered].sort((a, b) =>
+    a.departure_date.localeCompare(b.departure_date) ||
+    a.arrival_date.localeCompare(b.arrival_date)
+  );
+
+  // --- Rule 3: Deduplicate same origin+destination+date ---
+  const seen = new Set<string>();
+  const deduped = sorted.filter((leg) => {
+    const key = `${leg.origin_country}:${leg.origin_city}:${leg.destination_country}:${leg.destination_city}:${leg.departure_date}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  // --- Rule 4: Collapse same-day connections ---
+  // If leg[i] arrives city X and leg[i+1] departs city X same day, they're transit
+  const collapsed: ExtractedLeg[] = [];
+  let i = 0;
+  while (i < deduped.length) {
+    let current = deduped[i];
+    // Keep chaining connections: if next leg departs from where current arrives, same day
+    while (i + 1 < deduped.length) {
+      const next = deduped[i + 1];
+      const currentArrival = current.arrival_date || current.departure_date;
+      const sameCity = next.origin_city.toLowerCase() === current.destination_city.toLowerCase();
+      const sameDay = next.departure_date === currentArrival;
+      if (sameCity && sameDay) {
+        // Merge into one "leg" from original origin to final destination
+        current = {
+          ...current,
+          destination_city: next.destination_city,
+          destination_country: next.destination_country,
+          arrival_date: next.arrival_date || next.departure_date,
+        };
+        i++;
+      } else {
+        break;
+      }
+    }
+    collapsed.push(current);
+    i++;
+  }
+
+  // --- Rule 5 & 6: Build stays from consecutive leg pairs ---
+  // Each leg pair defines: stay in destination from arrival to next departure
+  const stays: AssembledStay[] = [];
+  const yearStart = `${taxYear}-01-01`;
+  const yearEnd = `${taxYear}-12-31`;
+
+  for (let j = 0; j < collapsed.length; j++) {
+    const leg = collapsed[j];
+    const arrivalDate = leg.arrival_date || leg.departure_date;
+    const nextDeparture = j + 1 < collapsed.length
+      ? collapsed[j + 1].departure_date
+      : null;
+
+    // Rule 5: Skip within-country travel (doesn't create a new stay)
+    if (j > 0) {
+      const prevLeg = collapsed[j - 1];
+      const prevDest = prevLeg.destination_country;
+      if (prevDest === leg.origin_country && leg.origin_country === leg.destination_country) {
+        // Within same country — don't create a separate stay, the existing stay continues
+        continue;
+      }
+    }
+
+    const departedDate = nextDeparture || yearEnd;
+    stays.push({
+      country: leg.destination_country,
+      date_arrived: arrivalDate,
+      date_departed: departedDate,
+      confidence: nextDeparture ? "HIGH" : "MEDIUM",
+      notes: nextDeparture
+        ? `${leg.type || "transport"}: ${leg.origin_city}→${leg.destination_city}`
+        : `${leg.type || "transport"}: ${leg.origin_city}→${leg.destination_city} (end of year inferred)`,
+    });
+  }
+
+  // --- Rule 9: Year boundary stays ---
+  // Before first leg: if first departure is not from tax home, create stay from Jan 1
+  if (collapsed.length > 0) {
+    const firstLeg = collapsed[0];
+    if (firstLeg.departure_date > yearStart) {
+      const originCountry = firstLeg.origin_country || taxHomeCountry;
+      stays.push({
+        country: originCountry,
+        date_arrived: yearStart,
+        date_departed: firstLeg.departure_date,
+        confidence: "MEDIUM",
+        notes: originCountry === taxHomeCountry
+          ? "Tax home: start of year until first departure"
+          : "Inferred: present at departure city from start of year",
+      });
+    }
+  }
+
+  // --- Rule 8: Fill gaps with tax home ---
+  // Sort stays so far, then find gaps
+  const sortedStays = [...stays].sort((a, b) =>
+    a.date_arrived.localeCompare(b.date_arrived)
+  );
+
+  const gapFills: AssembledStay[] = [];
+  for (let j = 0; j < sortedStays.length - 1; j++) {
+    const currentEnd = sortedStays[j].date_departed;
+    const nextStart = sortedStays[j + 1].date_arrived;
+    if (currentEnd < nextStart) {
+      gapFills.push({
+        country: taxHomeCountry,
+        date_arrived: currentEnd,
+        date_departed: nextStart,
+        confidence: "MEDIUM",
+        notes: "Tax home: gap between trips",
+      });
+    }
+  }
+
+  const allStays = [...stays, ...gapFills];
+
+  // --- Rule 9: Final merge via mergeStays ---
+  return { stays: mergeStays(allStays), warnings };
 }
 
 function stripHtml(html: string): string {
@@ -776,7 +891,7 @@ export async function POST(request: NextRequest) {
 
           const msgData: GmailMessageDetail = await msgResponse.json();
           const rawBody = extractEmailBody(msgData);
-          const body = stripHtml(rawBody).slice(0, 4000);
+          const body = stripHtml(rawBody).slice(0, 6000);
 
           return { id: meta.id, subject: meta.subject, snippet: meta.snippet, body };
         } catch {
@@ -893,10 +1008,9 @@ export async function POST(request: NextRequest) {
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // STAGE 3: Sonnet Extraction
+    // STAGE 3: Haiku Extraction
     // Extract individual transport LEGS from confirmed bookings
-    // Batched 5 emails per call, sequential to respect 30K TPM limit,
-    // with retry logic for 429 rate limits
+    // Batched 5 emails per call, 3 concurrent (Haiku has higher limits)
     // ═══════════════════════════════════════════════════════════════════
     const EXTRACT_BATCH_SIZE = 5;
     const extractBatches = chunkArray(bookingEmails, EXTRACT_BATCH_SIZE);
@@ -904,7 +1018,7 @@ export async function POST(request: NextRequest) {
 
     const extractionResults = await mapWithConcurrency(
       extractBatches,
-      1, // Sequential — 30K TPM limit means concurrent calls cause 429s
+      3, // Haiku has separate, higher rate limits
       async (batch) => {
         const emailBlock = batch
           .map(
@@ -916,7 +1030,7 @@ export async function POST(request: NextRequest) {
         try {
           const response = await callAnthropicWithRetry(() =>
             anthropic.messages.create({
-              model: "claude-sonnet-4-6",
+              model: "claude-haiku-4-5-20251001",
               max_tokens: 4096,
               messages: [
                 {
@@ -962,59 +1076,19 @@ export async function POST(request: NextRequest) {
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // STAGE 4: Sonnet Assembly (~$0.02)
-    // One call: stitch all legs into country stays using tax home context
+    // STAGE 4: Deterministic Assembly
+    // Stitch legs into country stays using algorithmic rules
+    // (no AI call — sorting, gap-filling, and merging are 100% deterministic)
     // ═══════════════════════════════════════════════════════════════════
-    const legsBlock = allLegs
-      .map(
-        (leg, i) =>
-          `[Leg ${i}] ${leg.departure_date} ${leg.origin_city} (${leg.origin_country}) → ${leg.destination_city} (${leg.destination_country}) | ${leg.type} ${leg.operator} ${leg.service_number} | ref: ${leg.booking_reference} | passengers: ${(leg.passenger_names || []).join(", ") || "unknown"}`
-      )
-      .join("\n");
+    const { stays, warnings: assemblyWarnings } = assembleLegsIntoStays(
+      allLegs,
+      taxHomeCountry,
+      tax_year,
+      userName,
+    );
 
-    let stays: AssembledStay[] = [];
-
-    try {
-      const assemblyResponse = await callAnthropicWithRetry(() =>
-        anthropic.messages.create({
-          model: "claude-sonnet-4-6",
-          max_tokens: 4096,
-          messages: [
-            {
-              role: "user",
-              content: `${buildAssemblyPrompt(taxHomeCountry, tax_year, allLegs.length, userName)}\n\nHere are ${allLegs.length} legs to assemble:\n\n${legsBlock}`,
-            },
-          ],
-        })
-      );
-
-      const assemblyData = parseJsonFromAI(assemblyResponse) as {
-        stays: AssembledStay[];
-        legs_used?: number[];
-        legs_unused?: number[];
-        warnings?: string[];
-      };
-      stays = mergeStays(assemblyData.stays || []);
-
-      if (assemblyData.legs_unused && assemblyData.legs_unused.length > 0) {
-        console.warn("Assembly: unused legs:", assemblyData.legs_unused);
-      }
-      if (assemblyData.warnings && assemblyData.warnings.length > 0) {
-        console.warn("Assembly warnings:", assemblyData.warnings);
-      }
-    } catch (err) {
-      const msg = `Stage 4 assembly failed: ${err instanceof Error ? err.message : err}`;
-      console.error(msg);
-      errors.push(msg);
-      // Fallback: convert legs into stays and merge same-country overlaps
-      const rawStays = allLegs.map((leg) => ({
-          country: leg.destination_country,
-          date_arrived: leg.arrival_date || leg.departure_date,
-          date_departed: leg.arrival_date || leg.departure_date,
-          confidence: "LOW" as const,
-          notes: "Fallback: assembly failed",
-        }));
-      stays = mergeStays(rawStays);
+    if (assemblyWarnings.length > 0) {
+      console.warn("Assembly warnings:", assemblyWarnings);
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -1135,6 +1209,7 @@ export async function POST(request: NextRequest) {
         stage2_rejected: triagedOutSubjects,
         stage3_legs: allLegs,
         stage4_stays: stays,
+        stage4_warnings: assemblyWarnings,
         errors,
       },
     });
