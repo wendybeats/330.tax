@@ -366,12 +366,21 @@ function assembleLegsIntoStays(
     return match;
   });
 
-  if (filtered.length === 0) {
+  // Filter out legs with Unknown country (bad extraction)
+  const valid = filtered.filter((leg) => {
+    if (leg.origin_country === "Unknown" || leg.destination_country === "Unknown") {
+      warnings.push(`Dropped leg with unknown country: ${leg.origin_city}→${leg.destination_city} ${leg.departure_date}`);
+      return false;
+    }
+    return true;
+  });
+
+  if (valid.length === 0) {
     return { stays: [], warnings };
   }
 
   // --- Rule 7 (sort): Chronological by departure_date ---
-  const sorted = [...filtered].sort((a, b) =>
+  const sorted = [...valid].sort((a, b) =>
     a.departure_date.localeCompare(b.departure_date) ||
     a.arrival_date.localeCompare(b.arrival_date)
   );
@@ -420,23 +429,39 @@ function assembleLegsIntoStays(
   const yearStart = `${taxYear}-01-01`;
   const yearEnd = `${taxYear}-12-31`;
 
+  // Helper: find the next leg that leaves the given country (skips domestic legs)
+  function findNextDeparture(fromIndex: number, country: string): string | null {
+    for (let k = fromIndex + 1; k < collapsed.length; k++) {
+      const next = collapsed[k];
+      // If this leg leaves the country, use its departure date
+      if (next.origin_country === country && next.destination_country !== country) {
+        return next.departure_date;
+      }
+      // If this leg is within the same country, keep looking
+      if (next.origin_country === country && next.destination_country === country) {
+        continue;
+      }
+      // If this leg starts from a different country, use its departure
+      return next.departure_date;
+    }
+    return null;
+  }
+
   for (let j = 0; j < collapsed.length; j++) {
     const leg = collapsed[j];
     const arrivalDate = leg.arrival_date || leg.departure_date;
-    const nextDeparture = j + 1 < collapsed.length
-      ? collapsed[j + 1].departure_date
-      : null;
 
     // Rule 5: Skip within-country travel (doesn't create a new stay)
     if (j > 0) {
       const prevLeg = collapsed[j - 1];
       const prevDest = prevLeg.destination_country;
       if (prevDest === leg.origin_country && leg.origin_country === leg.destination_country) {
-        // Within same country — don't create a separate stay, the existing stay continues
         continue;
       }
     }
 
+    // Look ahead past domestic legs to find next real departure from this country
+    const nextDeparture = findNextDeparture(j, leg.destination_country);
     const departedDate = nextDeparture || yearEnd;
     stays.push({
       country: leg.destination_country,
@@ -833,8 +858,8 @@ export async function POST(request: NextRequest) {
       // Sender override: emails from known airlines/OTAs always pass
       const fromKnownSender = KNOWN_SENDER_DOMAINS.some((d) => fromLower.includes(d));
 
-      if (subjectWhitelisted || fromKnownSender) {
-        // Check if this would have been blocked — track for debug output
+      // Subject whitelist always wins (PNR, confirmation number, etc.)
+      if (subjectWhitelisted) {
         const wouldBeBlocked = SUBJECT_BLOCKLIST.some((term) => subjectLower.includes(term));
         if (wouldBeBlocked) {
           whitelistSaved++;
@@ -843,8 +868,14 @@ export async function POST(request: NextRequest) {
         return true;
       }
 
+      // Known senders pass ONLY if subject isn't clearly promotional
+      const blocked = SUBJECT_BLOCKLIST.some((term) => subjectLower.includes(term));
+      if (fromKnownSender && !blocked) {
+        return true;
+      }
+
       // Standard blocklist
-      return !SUBJECT_BLOCKLIST.some((term) => subjectLower.includes(term));
+      return !blocked;
     });
 
     if (filtered.length === 0) {
@@ -879,7 +910,7 @@ export async function POST(request: NextRequest) {
     const emailSummaries: EmailSummary[] = [];
 
     const bodyResults = await mapWithConcurrency(
-      filteredSorted.slice(0, 200),
+      filteredSorted.slice(0, 400),
       20,
       async (meta) => {
         try {
