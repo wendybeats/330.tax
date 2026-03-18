@@ -63,7 +63,7 @@ export function ScanEmailsButton({ taxYear }: { taxYear: number }) {
         {scanning ? (
           <Loader2 className="size-4 animate-spin" />
         ) : result ? (
-          <CheckCircle2 className="size-4 text-green-600" />
+          <CheckCircle2 className="size-4 text-primary" />
         ) : (
           <Mail className="size-4" />
         )}
@@ -81,7 +81,7 @@ export function ScanEmailsButton({ taxYear }: { taxYear: number }) {
       </Button>
       {result && (
         <div className="space-y-1">
-          <p className="text-xs text-green-600 dark:text-green-400">{result}</p>
+          <p className="text-xs text-primary">{result}</p>
           {debug && (
             <button
               onClick={() => setShowDebug(!showDebug)}

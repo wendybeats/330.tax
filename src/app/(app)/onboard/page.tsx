@@ -366,8 +366,8 @@ export default function OnboardPage() {
             {scanPhase === "guided-results" && (
               <>
                 <CardHeader className="text-center">
-                  <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-full bg-green-500/10">
-                    <CheckCircle2 className="size-6 text-green-600 dark:text-green-400" />
+                  <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-full bg-accent">
+                    <CheckCircle2 className="size-6 text-primary" />
                   </div>
                   <CardTitle className="text-2xl">
                     {guidedResult && guidedResult.trips_created > 0
@@ -493,8 +493,8 @@ export default function OnboardPage() {
         {step === 5 && (
           <>
             <CardHeader className="text-center">
-              <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-full bg-green-500/10">
-                <CheckCircle2 className="size-6 text-green-600 dark:text-green-400" />
+              <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-full bg-accent">
+                <CheckCircle2 className="size-6 text-primary" />
               </div>
               <CardTitle className="text-2xl">All set!</CardTitle>
               <CardDescription>

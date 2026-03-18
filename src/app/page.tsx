@@ -89,8 +89,8 @@ export default function Home() {
   return (
     <div className="flex min-h-screen flex-col bg-background text-foreground">
       {/* Navigation */}
-      <nav className="sticky top-0 z-50 border-b border-border bg-background/80 backdrop-blur-lg">
-        <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-6">
+      <nav className="sticky top-0 z-50 border-b border-border bg-background/95 backdrop-blur-lg">
+        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
           <Link href="/" className="flex items-center gap-2">
             <Globe className="size-5 text-primary" />
             <span className="text-lg font-semibold tracking-tight">
@@ -113,13 +113,13 @@ export default function Home() {
 
       {/* Hero */}
       <section className="relative overflow-hidden">
-        <div className="absolute inset-0 -z-10 bg-[radial-gradient(ellipse_at_top,var(--color-muted)_0%,transparent_60%)]" />
-        <div className="mx-auto max-w-4xl px-6 pb-24 pt-24 text-center sm:pt-32 lg:pt-40">
+        <div className="absolute inset-0 -z-10 bg-[radial-gradient(ellipse_at_top,oklch(0.96_0.04_152/40%)_0%,transparent_60%)]" />
+        <div className="mx-auto max-w-4xl px-6 pb-28 pt-28 text-center sm:pt-36 lg:pt-44">
           <div className="mb-6 inline-flex items-center gap-1.5 rounded-full border border-border bg-muted px-3 py-1 text-xs font-medium text-muted-foreground">
             <ShieldCheck className="size-3.5" />
             IRS Section 911 &middot; Foreign Earned Income Exclusion
           </div>
-          <h1 className="mx-auto max-w-3xl text-4xl font-bold leading-tight tracking-tight sm:text-5xl lg:text-6xl">
+          <h1 className="mx-auto max-w-3xl text-5xl font-extrabold leading-tight tracking-tight sm:text-6xl lg:text-7xl">
             330 days abroad.
             <br />
             <span className="text-muted-foreground">
@@ -132,7 +132,7 @@ export default function Home() {
             IRS-ready log of every day you spent outside the U.S.
           </p>
           <div className="mt-10 flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
-            <Link href="/login" className={buttonVariants({ size: "lg", className: "h-12 px-8 text-base" })}>
+            <Link href="/login" className={buttonVariants({ size: "lg", className: "h-14 px-10 text-lg rounded-xl shadow-md shadow-primary/20" })}>
               Get Started Free
               <ArrowRight className="ml-1 size-4" />
             </Link>
@@ -144,12 +144,46 @@ export default function Home() {
               <ChevronRight className="size-3.5" />
             </Link>
           </div>
+          <p className="mt-4 text-sm text-muted-foreground">
+            Free forever for basic tracking. No credit card required.
+          </p>
+
+          {/* Hero product visualization */}
+          <div className="mx-auto mt-16 max-w-2xl overflow-hidden rounded-xl border border-border bg-card shadow-xl shadow-black/5">
+            <div className="flex items-center justify-between border-b border-border bg-muted/50 px-5 py-3">
+              <span className="text-sm font-semibold text-foreground">Travel Timeline &mdash; 2025</span>
+              <span className="rounded-full bg-accent px-2.5 py-0.5 text-xs font-medium text-primary">332 days abroad</span>
+            </div>
+            <div className="divide-y divide-border">
+              {[
+                { flag: "\ud83c\uddec\ud83c\uddea", country: "Georgia", dates: "Jan 1 \u2013 Apr 6", days: 96, status: "HIGH" },
+                { flag: "\ud83c\uddea\ud83c\uddf8", country: "Spain", dates: "Apr 7 \u2013 Apr 20", days: 13, status: "HIGH" },
+                { flag: "\ud83c\uddec\ud83c\uddea", country: "Georgia", dates: "Apr 21 \u2013 Jul 14", days: 85, status: "HIGH" },
+                { flag: "\ud83c\uddf2\ud83c\uddea", country: "Montenegro", dates: "Jul 15 \u2013 Jul 28", days: 13, status: "MEDIUM" },
+                { flag: "\ud83c\uddf9\ud83c\uddf7", country: "Turkey", dates: "Jul 29 \u2013 Oct 10", days: 74, status: "HIGH" },
+              ].map((row) => (
+                <div key={row.country + row.dates} className="flex items-center justify-between px-5 py-3">
+                  <div className="flex items-center gap-3">
+                    <span className="text-lg">{row.flag}</span>
+                    <div className="text-left">
+                      <p className="text-sm font-medium text-foreground">{row.country}</p>
+                      <p className="text-xs text-muted-foreground">{row.dates}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="text-sm font-medium tabular-nums text-foreground">{row.days} days</span>
+                    <span className={`inline-block size-2 rounded-full ${row.status === "HIGH" ? "bg-primary" : "bg-amber-400"}`} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       </section>
 
       {/* How It Works */}
       <section id="how-it-works" className="border-t border-border bg-muted/30">
-        <div className="mx-auto max-w-6xl px-6 py-24">
+        <div className="mx-auto max-w-6xl px-6 py-28">
           <div className="text-center">
             <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
               Three steps to compliance
@@ -158,20 +192,20 @@ export default function Home() {
               From inbox to IRS-ready report in under five minutes.
             </p>
           </div>
-          <div className="mt-16 grid gap-8 sm:grid-cols-3">
+          <div className="mt-16 grid gap-12 sm:grid-cols-3">
             {steps.map((step, i) => (
               <div key={step.title} className="relative text-center">
                 {i < steps.length - 1 && (
                   <div className="absolute right-0 top-10 hidden h-px w-full translate-x-1/2 bg-border sm:block" />
                 )}
-                <div className="relative mx-auto flex size-20 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-sm">
+                <div className="relative mx-auto flex size-20 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-md shadow-primary/15">
                   <step.icon className="size-8" strokeWidth={1.5} />
                 </div>
-                <div className="absolute -top-3 left-1/2 flex size-7 -translate-x-1/2 items-center justify-center rounded-full bg-background text-xs font-bold ring-1 ring-border">
+                <div className="absolute -top-3 left-1/2 flex size-7 -translate-x-1/2 items-center justify-center rounded-full bg-background text-xs font-bold shadow-sm ring-1 ring-border">
                   {i + 1}
                 </div>
                 <h3 className="mt-6 text-lg font-semibold">{step.title}</h3>
-                <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                <p className="mt-2 text-base leading-relaxed text-muted-foreground">
                   {step.description}
                 </p>
               </div>
@@ -182,7 +216,7 @@ export default function Home() {
 
       {/* Features */}
       <section className="border-t border-border">
-        <div className="mx-auto max-w-6xl px-6 py-24">
+        <div className="mx-auto max-w-6xl px-6 py-28">
           <div className="text-center">
             <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
               Built for expats who want peace of mind
@@ -193,11 +227,11 @@ export default function Home() {
           </div>
           <div className="mt-16 grid gap-6 sm:grid-cols-3">
             {features.map((feature) => (
-              <Card key={feature.title} className="bg-card">
+              <Card key={feature.title} className="bg-card shadow-sm">
                 <CardHeader>
-                  <div className="mb-2 flex size-10 items-center justify-center rounded-lg bg-muted">
+                  <div className="mb-2 flex size-10 items-center justify-center rounded-lg bg-accent">
                     <feature.icon
-                      className="size-5 text-foreground"
+                      className="size-5 text-primary"
                       strokeWidth={1.5}
                     />
                   </div>
@@ -212,7 +246,7 @@ export default function Home() {
 
       {/* Pricing */}
       <section className="border-t border-border bg-muted/30">
-        <div className="mx-auto max-w-5xl px-6 py-24">
+        <div className="mx-auto max-w-5xl px-6 py-28">
           <div className="text-center">
             <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
               Simple, transparent pricing
@@ -232,7 +266,7 @@ export default function Home() {
               </CardHeader>
               <CardContent className="flex flex-1 flex-col">
                 <div className="mb-6">
-                  <span className="text-4xl font-bold">$0</span>
+                  <span className="text-5xl font-bold">$0</span>
                   <span className="ml-1 text-muted-foreground">forever</span>
                 </div>
                 <ul className="space-y-3 text-sm">
@@ -243,7 +277,7 @@ export default function Home() {
                     "Gap & overlap detection",
                   ].map((item) => (
                     <li key={item} className="flex items-start gap-2">
-                      <Check className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                      <Check className="mt-0.5 size-4 shrink-0 text-primary" />
                       <span>{item}</span>
                     </li>
                   ))}
@@ -257,7 +291,7 @@ export default function Home() {
             </Card>
 
             {/* Pro tier */}
-            <Card className="relative flex flex-col ring-2 ring-primary">
+            <Card className="relative flex flex-col shadow-lg shadow-primary/10 ring-2 ring-primary">
               <div className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full bg-primary px-3 py-0.5 text-xs font-medium text-primary-foreground">
                 Most Popular
               </div>
@@ -269,7 +303,7 @@ export default function Home() {
               </CardHeader>
               <CardContent className="flex flex-1 flex-col">
                 <div className="mb-6">
-                  <span className="text-4xl font-bold">$29</span>
+                  <span className="text-5xl font-bold">$29</span>
                   <span className="ml-1 text-muted-foreground">/ year</span>
                 </div>
                 <ul className="space-y-3 text-sm">
@@ -299,7 +333,7 @@ export default function Home() {
 
       {/* Trust Signals */}
       <section className="border-t border-border">
-        <div className="mx-auto max-w-6xl px-6 py-24">
+        <div className="mx-auto max-w-6xl px-6 py-28">
           <div className="text-center">
             <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
               Your privacy comes first
@@ -308,15 +342,15 @@ export default function Home() {
               We built 330.tax with security at every layer.
             </p>
           </div>
-          <div className="mt-16 grid gap-6 sm:grid-cols-3">
+          <div className="mt-16 grid gap-8 sm:grid-cols-3">
             {trustSignals.map((signal) => (
               <div
                 key={signal.title}
                 className="flex flex-col items-center text-center"
               >
-                <div className="flex size-12 items-center justify-center rounded-full bg-muted">
+                <div className="flex size-12 items-center justify-center rounded-full bg-accent">
                   <signal.icon
-                    className="size-5 text-foreground"
+                    className="size-5 text-primary"
                     strokeWidth={1.5}
                   />
                 </div>
@@ -332,7 +366,7 @@ export default function Home() {
 
       {/* Final CTA */}
       <section className="border-t border-border bg-primary text-primary-foreground">
-        <div className="mx-auto max-w-4xl px-6 py-20 text-center">
+        <div className="mx-auto max-w-4xl px-6 py-24 text-center">
           <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
             Stop guessing. Start proving.
           </h2>
@@ -352,7 +386,7 @@ export default function Home() {
 
       {/* Footer */}
       <footer className="border-t border-border bg-muted/30">
-        <div className="mx-auto max-w-6xl px-6 py-12">
+        <div className="mx-auto max-w-6xl px-6 py-16">
           <div className="grid gap-8 sm:grid-cols-4">
             <div className="sm:col-span-2">
               <Link href="/" className="flex items-center gap-2">

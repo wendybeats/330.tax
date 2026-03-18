@@ -222,7 +222,7 @@ export default async function ExportPage() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               {presenceTest.qualifies ? (
-                <CheckCircle2 className="size-5 text-green-600 dark:text-green-400" />
+                <CheckCircle2 className="size-5 text-primary" />
               ) : (
                 <XCircle className="size-5 text-destructive" />
               )}
@@ -258,7 +258,7 @@ export default async function ExportPage() {
 
             <div className="mt-6 rounded-lg border border-border p-4">
               {presenceTest.qualifies ? (
-                <p className="flex items-center gap-2 text-sm font-medium text-green-600 dark:text-green-400">
+                <p className="flex items-center gap-2 text-sm font-medium text-primary">
                   <CheckCircle2 className="size-4" />
                   You meet the 330-day Physical Presence Test requirement.
                 </p>

@@ -166,17 +166,17 @@ export function TripList({ trips, gaps, sourceByTripId }: TripListProps) {
               return (
                 <Card
                   key={`gap-${index}`}
-                  className="border-yellow-500/30 bg-yellow-50/50 dark:bg-yellow-950/10"
+                  className="border-yellow-500/30 bg-yellow-50/50"
                 >
                   <CardContent className="flex items-center justify-between gap-3">
                     <div className="flex items-center gap-3">
-                      <AlertTriangle className="size-5 shrink-0 text-yellow-600 dark:text-yellow-500" />
+                      <AlertTriangle className="size-5 shrink-0 text-yellow-600" />
                       <div>
-                        <p className="font-medium text-yellow-800 dark:text-yellow-400">
+                        <p className="font-medium text-yellow-800">
                           Gap detected: {gapDays} day{gapDays !== 1 ? "s" : ""}{" "}
                           unaccounted for
                         </p>
-                        <p className="text-xs text-yellow-700/80 dark:text-yellow-500/70">
+                        <p className="text-xs text-yellow-700/80">
                           {format(parseISO(gap.from_date), "MMM d, yyyy")} &mdash;{" "}
                           {format(parseISO(gap.to_date), "MMM d, yyyy")}
                         </p>

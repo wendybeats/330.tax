@@ -72,7 +72,7 @@ function getFEIEStatus(daysAbroad: number) {
 }
 
 function getProgressColor(daysAbroad: number): string {
-  if (daysAbroad >= 330) return "bg-emerald-500";
+  if (daysAbroad >= 330) return "bg-primary";
   if (daysAbroad >= 280) return "bg-amber-500";
   return "bg-red-500";
 }
