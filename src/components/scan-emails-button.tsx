@@ -113,7 +113,7 @@ export function ScanEmailsButton({ taxYear }: { taxYear: number }) {
           )}
           <div>
             <p className="font-medium">Legs extracted ({debug.stage3_legs.length}):</p>
-            {(debug.stage3_legs as Array<Record<string, unknown>>).map((leg, i) => (
+            {(debug.stage3_legs as Array<Record<string, string>>).map((leg, i) => (
               <p key={i} className="text-muted-foreground truncate">
                 • [{leg.departure_date}] {leg.origin_city} ({leg.origin_country}) → {leg.destination_city} ({leg.destination_country}) | {leg.type} {leg.operator} {leg.service_number}
               </p>
@@ -121,7 +121,7 @@ export function ScanEmailsButton({ taxYear }: { taxYear: number }) {
           </div>
           <div>
             <p className="font-medium">Stays assembled ({debug.stage4_stays.length}):</p>
-            {(debug.stage4_stays as Array<Record<string, unknown>>).map((stay, i) => (
+            {(debug.stage4_stays as Array<Record<string, string>>).map((stay, i) => (
               <p key={i} className="text-muted-foreground truncate">
                 • {stay.country}: {stay.date_arrived} → {stay.date_departed} [{stay.confidence}]
               </p>
