@@ -40,6 +40,7 @@ export function ScanEmailsButton({ taxYear }: { taxYear: number }) {
       if (!res.ok) {
         setError(data.error || `Scan failed (${res.status})`);
       } else {
+        console.log("[330.tax] Full scan response:", JSON.stringify(data, null, 2));
         setResult(data.message || `Found ${data.total_found} emails, created ${data.trips_created} trips`);
         if (data.debug) setDebug(data.debug);
         router.refresh();
@@ -93,7 +94,7 @@ export function ScanEmailsButton({ taxYear }: { taxYear: number }) {
         </div>
       )}
       {showDebug && debug && (
-        <div className="max-h-60 overflow-y-auto rounded border border-border bg-muted/50 p-2 text-xs space-y-2">
+        <div className="max-h-96 overflow-y-auto rounded border border-border bg-muted/50 p-2 text-xs space-y-2">
           {debug.stage1_blocked.length > 0 && (
             <div>
               <p className="font-medium">Blocked by subject filter ({debug.stage1_blocked.length}):</p>
@@ -111,10 +112,20 @@ export function ScanEmailsButton({ taxYear }: { taxYear: number }) {
             </div>
           )}
           <div>
-            <p className="font-medium">Legs extracted: {debug.stage3_legs.length}</p>
+            <p className="font-medium">Legs extracted ({debug.stage3_legs.length}):</p>
+            {(debug.stage3_legs as Array<Record<string, unknown>>).map((leg, i) => (
+              <p key={i} className="text-muted-foreground truncate">
+                • [{leg.departure_date}] {leg.origin_city} ({leg.origin_country}) → {leg.destination_city} ({leg.destination_country}) | {leg.type} {leg.operator} {leg.service_number}
+              </p>
+            ))}
           </div>
           <div>
-            <p className="font-medium">Stays assembled: {debug.stage4_stays.length}</p>
+            <p className="font-medium">Stays assembled ({debug.stage4_stays.length}):</p>
+            {(debug.stage4_stays as Array<Record<string, unknown>>).map((stay, i) => (
+              <p key={i} className="text-muted-foreground truncate">
+                • {stay.country}: {stay.date_arrived} → {stay.date_departed} [{stay.confidence}]
+              </p>
+            ))}
           </div>
           {debug.errors && debug.errors.length > 0 && (
             <div>
