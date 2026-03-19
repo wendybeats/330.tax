@@ -144,13 +144,15 @@ export default async function DashboardPage() {
   const distinctCountries = new Set(taxYearTrips.map((t) => t.country));
   const totalCountries = distinctCountries.size;
 
-  const totalDaysAbroad = taxYearTrips
+  const rawDaysAbroad = taxYearTrips
     .filter((t) => !isUSCountry(t.country))
     .reduce((sum, t) => sum + t.full_days_present, 0);
+  const totalDaysAbroad = Math.min(rawDaysAbroad, 365);
 
-  const totalUSDays = taxYearTrips
+  const rawUSDays = taxYearTrips
     .filter((t) => isUSCountry(t.country))
     .reduce((sum, t) => sum + t.full_days_present, 0);
+  const totalUSDays = Math.min(rawUSDays, 365);
 
   const feieStatus = getFEIEStatus(totalDaysAbroad);
   const progressPercent = Math.min((totalDaysAbroad / 330) * 100, 100);

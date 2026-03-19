@@ -49,11 +49,11 @@ export function calculatePresenceTest(
     daysByCountry[trip.country] = (daysByCountry[trip.country] || 0) + days;
   }
 
-  const totalDaysAbroad = totalPeriodDays - totalUsDays;
+  const totalDaysAbroad = Math.min(totalPeriodDays - totalUsDays, 365);
 
   return {
     total_days_abroad: totalDaysAbroad,
-    total_us_days: totalUsDays,
+    total_us_days: Math.min(totalUsDays, 365),
     qualifying_days_needed: 330,
     qualifies: totalDaysAbroad >= 330,
     qualifying_period_start: qualifyingStart,
