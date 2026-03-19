@@ -910,7 +910,7 @@ export async function POST(request: NextRequest) {
     const emailSummaries: EmailSummary[] = [];
 
     const bodyResults = await mapWithConcurrency(
-      filteredSorted.slice(0, 400),
+      filteredSorted.slice(0, 300),
       20,
       async (meta) => {
         try {
