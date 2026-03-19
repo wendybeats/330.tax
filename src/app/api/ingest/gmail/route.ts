@@ -1179,21 +1179,31 @@ export async function POST(request: NextRequest) {
       .eq("user_id", user.id)
       .eq("tax_year", tax_year);
 
-    // Create trip records from merged stays
+    // Clip stays to the tax year boundaries and drop those entirely outside
+    const yearStart = `${tax_year}-01-01`;
+    const yearEnd = `${tax_year}-12-31`;
+
     const tripRows = combinedStays
       .filter((stay) => {
         if (!stay.country || !stay.date_arrived) return false;
         if (!stay.date_arrived.match(/^\d{4}-\d{2}-\d{2}$/)) return false;
+        // Drop stays entirely before or after the tax year
+        const departed = stay.date_departed?.match(/^\d{4}-\d{2}-\d{2}$/)
+          ? stay.date_departed : stay.date_arrived;
+        if (departed < yearStart || stay.date_arrived > yearEnd) return false;
         return true;
       })
       .map((stay) => {
         const dateDeparted = stay.date_departed?.match(/^\d{4}-\d{2}-\d{2}$/)
           ? stay.date_departed
           : stay.date_arrived;
+        // Clip to tax year boundaries
+        const clippedArrival = stay.date_arrived < yearStart ? yearStart : stay.date_arrived;
+        const clippedDeparture = dateDeparted > yearEnd ? yearEnd : dateDeparted;
         const earlier =
-          stay.date_arrived <= dateDeparted ? stay.date_arrived : dateDeparted;
+          clippedArrival <= clippedDeparture ? clippedArrival : clippedDeparture;
         const later =
-          stay.date_arrived > dateDeparted ? stay.date_arrived : dateDeparted;
+          clippedArrival > clippedDeparture ? clippedArrival : clippedDeparture;
         return {
           user_id: user.id,
           tax_year,
