@@ -27,6 +27,7 @@ import { Button } from "@/components/ui/button"
 interface AddTripDialogProps {
   open: boolean
   onClose: () => void
+  taxYear: number
   prefillDateArrived?: string
   prefillDateDeparted?: string
 }
@@ -34,6 +35,7 @@ interface AddTripDialogProps {
 export function AddTripDialog({
   open,
   onClose,
+  taxYear,
   prefillDateArrived,
   prefillDateDeparted,
 }: AddTripDialogProps) {
@@ -49,6 +51,7 @@ export function AddTripDialog({
   const [confidence, setConfidence] = useState<ConfidenceLevel>("HIGH")
   const [notes, setNotes] = useState("")
   const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   // Reset form when dialog opens
   useEffect(() => {
@@ -62,6 +65,7 @@ export function AddTripDialog({
       setUsIncome("")
       setConfidence("HIGH")
       setNotes("")
+      setError(null)
     }
   }, [open, prefillDateArrived, prefillDateDeparted])
 
@@ -79,6 +83,7 @@ export function AddTripDialog({
 
   async function handleSave() {
     setSaving(true)
+    setError(null)
 
     try {
       const res = await fetch("/api/trips", {
@@ -88,6 +93,7 @@ export function AddTripDialog({
           country,
           date_arrived: dateArrived,
           date_departed: dateDeparted,
+          tax_year: taxYear,
           full_days_present: fullDaysPresent,
           us_business_days: usBusinessDays ? Number(usBusinessDays) : null,
           us_income_earned: usIncome ? Number(usIncome) : null,
@@ -98,12 +104,14 @@ export function AddTripDialog({
 
       if (!res.ok) {
         const err = await res.json()
-        console.error("Failed to create trip:", err)
+        setError(err.error || "Failed to add trip")
         return
       }
 
       router.refresh()
       onClose()
+    } catch {
+      setError("Connection error. Please try again.")
     } finally {
       setSaving(false)
     }
@@ -239,6 +247,10 @@ export function AddTripDialog({
             />
           </div>
         </div>
+
+        {error && (
+          <p className="text-sm text-destructive">{error}</p>
+        )}
 
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>

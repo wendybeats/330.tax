@@ -255,6 +255,7 @@ export function TripList({ trips, gaps, sourceByTripId }: TripListProps) {
       <AddTripDialog
         open={addOpen}
         onClose={() => setAddOpen(false)}
+        taxYear={trips[0]?.tax_year ?? new Date().getFullYear()}
         prefillDateArrived={prefillDates.dateArrived}
         prefillDateDeparted={prefillDates.dateDeparted}
       />

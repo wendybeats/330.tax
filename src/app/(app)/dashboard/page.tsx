@@ -14,6 +14,7 @@ import {
 import { createClient } from "@/lib/supabase/server";
 import { getCountryFlag } from "@/lib/trips";
 import type { Trip, TaxProfile } from "@/types/database";
+import { ThresholdConfetti } from "@/components/dashboard/threshold-confetti";
 
 import {
   Card,
@@ -162,6 +163,7 @@ export default async function DashboardPage() {
 
   return (
     <div className="mx-auto max-w-6xl space-y-8 px-4 py-8">
+      <ThresholdConfetti daysAbroad={totalDaysAbroad} />
       {/* Header */}
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
